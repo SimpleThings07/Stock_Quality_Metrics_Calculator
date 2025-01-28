@@ -14,8 +14,15 @@ import datetime
 import os
 import json
 import math
-import requests
 import logging
+import logging.config
+import requests
+import traceback
+from dataclasses import dataclass    # Data Class
+
+# Time and Date Modules
+import time
+from datetime import datetime        # Manipulating dates and times
 
 # Data Manipulation Modules
 import pandas as pd
@@ -32,14 +39,246 @@ import yfinance as yf
 
 # ---------------------- Script Configuration ----------------------
 
-# Setup logging
-script_name = os.path.basename(__file__).replace('.py', '')
-log_file = f"{script_name}.log"
 
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s',  # Include log level
-                    handlers=[logging.StreamHandler(), logging.FileHandler(log_file)])
+# Create truly immutable Python object - values of members are immutable.
+# By passing 'frozen=True' to the 'dataclass()' decorator you can emulate immutability.
 
+@dataclass(frozen=True)
+class __ProgramInfo__:
+    """Class for keeping track of the Program relevant information (SW-Version, Program Description, etc)."""
+    
+    # MAJOR: Incremented when incompatible API changes are made. Applications and other software that use the affected APIs will break.
+    #        Hence, their code have to be updated.
+    majorVersion : str = "0"
+
+    # MINOR: Incremented when new functionality is added in a backward compatible manner. It's safe to update to a new minor version
+    #        without requiring code changes. Code changes are needed only to make use of the new features.
+    minorVersion : str = "0"
+    
+    # PATCH: Incremented when backward compatible bug fixes are made. No new features are added. Some call this micro.
+    patchVersion : str = "10"
+    
+    # Build Date of the Application - Date Format: YYMMDD
+    buildDate : str = datetime (
+        year=2025,
+        month=1,
+        day=28
+    )
+
+    # Complete Software Version - Major.Minor.Patch.BuildDate (yymmdd) -> e.g '1.0.0'
+    swVersion: str = f"{majorVersion}.{minorVersion}.{patchVersion}"
+
+
+
+# ---------------------- Setup logging ----------------------
+
+SCRIPT_NAME = os.path.basename(__file__).replace('.py', '')
+LOG_FILE = f"{SCRIPT_NAME}.log"
+LOG_CONFIG_FILE = "LoggingConfig.json"
+
+
+def config_logging ( ):
+    """ Configure the logger with the Command-line arguments
+
+            Parameters:
+                None
+
+            Returns:
+                o_log_file_path (str): Path to the current Log File
+
+    """
+    o_log_file_path = LOG_FILE
+
+
+    # Load Logging configuration
+    with open(LOG_CONFIG_FILE, "r") as logging_config_file:
+
+        logging_config = json.load(logging_config_file)
+
+        # Update the log file name dynamically
+        if 'handlers' in logging_config and 'file' in logging_config['handlers']:
+            logging_config['handlers']['file']['filename'] = o_log_file_path
+        else:
+            raise KeyError("The logging configuration JSON is missing the 'file' handler.")
+
+        # Takes the logging configuration from a dictionary.
+        logging.config.dictConfig ( logging_config )
+
+
+    # Return the currently used Log File Path
+    return o_log_file_path
+
+
+
+# ---------------------- Classes for Quality Metrics ----------------------
+
+# Quality Score Calculation from "Size Matters if You Control Your Junk" by Asness, Frazzini, and Pedersen
+
+# To avoid data mining, the authors base their measures on their theoretical model 
+# using standard “off-the-shelf” empirical measures to compute three composite 
+# quality measures: Profitability, Growth, and Safety.
+
+# These three quality components are averaged to compute a single overall quality score.
+# Results are described as qualitatively robust to the specific choices of factors.
+
+# Profitability:
+# Theoretical intuition suggests that profitability should be measured as the 
+# “sustainable” part of profits in relation to book value, adjusted for accruals. 
+# Empirically, several profitability measures are averaged to reduce noise and focus on sustainability:
+# - Gross Profits over Assets (GPOA)
+# - Return on Equity (ROE)
+# - Return on Assets (ROA)
+# - Cash Flow over Assets (CFOA)
+# - Gross Margin (GMAR)
+# - Accruals (ACC)
+# 
+# To ensure all metrics are on equal footing, each month the authors convert each variable 
+# into ranks and standardize them to obtain a z-score.
+# The z-score for a variable x is calculated as:
+# z(x) = (r - μ_r) / σ_r
+# where:
+# - r is the vector of ranks
+# - μ_r is the cross-sectional mean of the ranks
+# - σ_r is the standard deviation of the ranks.
+# 
+# Profitability score is the average of the individual z-scores for the measures listed above:
+# Profitability = z(z_gpoa + z_roe + z_roa + z_cfoa + z_gmar + z_acc)
+
+# Growth:
+# Growth is measured as the five-year growth in profitability (excluding accruals).
+# Five-year growth is calculated as the change in the numerator (e.g., profits) 
+# divided by the lagged denominator (e.g., assets).
+# The five growth measures calculated are:
+# - Five-year growth in GPOA
+# - Five-year growth in ROE
+# - Five-year growth in ROA
+# - Five-year growth in CFOA
+# - Five-year growth in GMAR
+# 
+# The growth score is the average of the z-scores of these five metrics:
+# Growth = z(z_Δgpoa + z_Δroe + z_Δroa + z_Δcfoa + z_Δgmar)
+
+# Safety:
+# Safety is defined as a measure of financial stability and low risk.
+# The metrics considered include:
+# - Low beta (BAB)
+# - Low leverage (LEV)
+# - Low bankruptcy risk (O-Score and Z-Score)
+# - Low ROE volatility (EVOL)
+# 
+# The safety score is calculated as the average of the z-scores of the above metrics:
+# Safety = z(z_bab + z_lev + z_o + z_z + z_evol)
+
+# Quality Score:
+# The three measures are combined into a single composite quality score:
+# Quality = z(Profitability + Growth + Safety)
+
+# Missing Data Handling:
+# To construct the composite quality measure as well as the individual subcomponents,
+# the authors use all available information. If a particular measure is missing due to
+# lack of data availability, the remaining available measures are averaged instead.
+
+# Robustness Tests:
+# The authors conducted robustness tests, including using raw values rather than ranks.
+
+
+
+# Value metrics as described in  MSCI Value Weighted Methodology:
+# 
+#    - Book Value per Share (P/B Ratio)
+#    - Sales Value (3-year average Sales per Share)
+#    - Earnings Value (3-year average Earnings per Share)
+#    - Cash Earnings Value (3-year average Cash Flow per Share)
+#    
+#    https://www.msci.com/eqb/methodology/meth_docs/MSCI_Value_Weighted_Index_Methodology_Book_May2012.pdf
+#
+class ValueMetrics:
+    def __init__(self):
+        self.book_value_to_price = None      #
+        self.earnings_to_price = None        # 
+        self.sales_value = None              # 
+        self.cash_earnings_value = None      # 
+
+# Classes for storing quality metrics as described in Asness, Frazzini, and Pedersen (2014)
+# Each metric is initialized as None and can be populated later using financial data
+class ProfitabilityMetrics:
+    def __init__(self):
+        # Profitability metrics include gross profit, margins, return on equity, return on assets,
+        # cash flow over assets, and accruals
+        self.earnings_growth = None       # Earnings growth (CAGR)
+        self.earnings_variability = None  # Earnings variability (EVAR)
+
+        # Profitability metrics as described in Asness, Frazzini, and Pedersen (2014)
+        self.gpoa = None  # Gross profits over assets (GPOA) ++
+        self.roe = None  # Return on equity (ROE)            +
+        self.roa = None  # Return on assets (ROA)            +
+        self.cfoa = None  # Cash Flow over Assets (CFOA)     +
+        self.gpmar = None  # Gross Profit margin (GPMAR)     +
+        self.accruals = None  # Accruals (ACC)
+
+
+class GrowthMetrics:
+    def __init__(self):
+        # Growth metrics include the five-year growth rates for profitability measures
+        self.earnings_growth = None  # Five-year growth in Earnings                      +
+
+        # Profitability metrics as described in Asness, Frazzini, and Pedersen (2014)
+        self.gpoa_growth = None  # Five-year growth in Gross Profits over Assets         +
+        self.roe_growth = None   # Five-year growth in Return on Equity
+        self.roa_growth = None   # Five-year growth in Return on Assets
+        self.cfoa_growth = None  # Five-year growth in Cash Flow over Assets
+        self.gpmar_growth = None  # Five-year growth in Gross Profit Margin
+
+class SafetyMetrics:
+    def __init__(self):
+        # Safety metrics focus on risk and financial stability
+        self.leverage = None  # Leverage (LEV)
+        self.beta = None  # Market beta (BAB)
+        self.bankruptcy_risk = None  # O-Score or Z-Score
+        self.roe_volatility = None  # Volatility of Return on Equity (ROE)
+
+# Class to calculate quality metrics based on financial data
+class QualityMetricsCalculator:
+    @staticmethod
+    def calculate_profitability(data):
+        profitability_metrics = ProfitabilityMetrics()
+        profitability_metrics.earnings_growth = data.get('earnings_growth')
+        profitability_metrics.gpoa = data.get('gpoa')
+        profitability_metrics.roe = data.get('roe')
+        profitability_metrics.roa = data.get('roa')
+        profitability_metrics.cfoa = data.get('cfoa')
+        profitability_metrics.gmar = data.get('gmar')
+        profitability_metrics.accruals = data.get('accruals')
+        return profitability_metrics
+
+    @staticmethod
+    def calculate_growth(data):
+        growth_metrics = GrowthMetrics()
+        growth_metrics.earnings_growth = data.get('earnings_growth')
+        growth_metrics.gpoa_growth = data.get('gpoa_growth')
+        growth_metrics.roe_growth = data.get('roe_growth')
+        growth_metrics.roa_growth = data.get('roa_growth')
+        growth_metrics.cfoa_growth = data.get('cfoa_growth')
+        growth_metrics.gmar_growth = data.get('gmar_growth')
+        return growth_metrics
+
+    @staticmethod
+    def calculate_safety(data):
+        safety_metrics = SafetyMetrics()
+        safety_metrics.leverage = data.get('leverage')
+        safety_metrics.beta = data.get('beta')
+        safety_metrics.bankruptcy_risk = data.get('bankruptcy_risk')
+        safety_metrics.roe_volatility = data.get('roe_volatility')
+        safety_metrics.evar = data.get('evar')
+        return safety_metrics
+
+class Stock():
+    def __init__( self, ticker, profitability_metrics, growth_metrics, safety_metrics ):
+        # Growth metrics include the five-year growth rates for profitability measures
+        self.ticker = ticker                                # Stock ticker symbol
+        self.profitability_metrics = profitability_metrics  # Five-year growth in Gross Profits over Assets
+        self.growth_metrics = growth_metrics                # Five-year growth in Return on Equity
+        self.safety_metrics = safety_metrics                # Five-year growth in Return on Assets
 
 # ---------------------- Helper Functions ----------------------
 
@@ -56,8 +295,6 @@ def print_disclaimer():
     """
     logging.info(disclaimer_message)
 
-# Print the disclaimer message
-print_disclaimer()
 
 
 # Read the configuration file
@@ -77,6 +314,8 @@ def fetch_earnings_alpha_vantage(api_key, base_url, ticker, data_type="eps", ear
 
     """
         Function to fetch annual income statement data (EPS or Net Income) from Alpha Vantage as a fallback.
+
+        https://www.alphavantage.co/documentation/#income-statement
 
         Parameters:
         - api_key (str): Your Alpha Vantage API key.
@@ -111,7 +350,7 @@ def fetch_earnings_alpha_vantage(api_key, base_url, ticker, data_type="eps", ear
             "datatype": "json"                   # You can choose "map", "json", or "csv"
         }
         
-        logging.info(f"Fetching {data_type.upper()} data from Alpha Vantage for {ticker} using function {alpha_vantage_function}.")
+        logging.info(f"Fetching {data_type.upper()} data from 'Alpha Vantage' using function {alpha_vantage_function} (Ticker: {ticker}).")
         
         # Sending request to the API
         response = requests.get(alpha_vantage_url, params=params)
@@ -139,18 +378,17 @@ def fetch_earnings_alpha_vantage(api_key, base_url, ticker, data_type="eps", ear
 
                         # Extract and convert EPS data from string into floats
                         eps_data = [float(earnings.get("reportedEPS", 0)) for earnings in annual_earnings]
-                        logging.info(f"Fetched {data_type.upper()} Data from Alpha Vantage for {ticker} successfully.")
 
                         return eps_data
                     
                     # If the response does not contain the 'annualEarnings' key
                     else:
-                        logging.error(f"No 'annualEarnings' data available for {ticker} on Alpha Vantage.")
+                        logging.warning(f"No 'annualEarnings' data available for {ticker} on 'Alpha Vantage'.")
 
                         # Check if the response contains 'Information' key
                         if 'Information' in alpha_vantage_data:
                             alpha_vantage_info = alpha_vantage_data['Information']
-                            logging.error(f"Alpha Vantage Response: {alpha_vantage_info}")
+                            logging.warning(f"'Alpha Vantage' Response: {alpha_vantage_info}")
 
                         return None
                 
@@ -165,18 +403,17 @@ def fetch_earnings_alpha_vantage(api_key, base_url, ticker, data_type="eps", ear
 
                         # Extract and convert EPS data from string into floats
                         eps_data = [float(earnings.get("reportedEPS", 0)) for earnings in quarterly_earnings]
-                        logging.info(f"Fetched {data_type.upper()} Data from Alpha Vantage for {ticker} successfully.")
 
                         return eps_data
                     
                     # If the response does not contain the 'quarterlyEarnings' key
                     else:
-                        logging.error(f"No 'quarterlyEarnings' data available for {ticker} on Alpha Vantage.")
+                        logging.warning(f"No 'quarterlyEarnings' data available for {ticker} on 'Alpha Vantage'.")
 
                         # Check if the response contains 'Information' key
                         if 'Information' in alpha_vantage_data:
                             alpha_vantage_info = alpha_vantage_data['Information']
-                            logging.error(f"Alpha Vantage Response: {alpha_vantage_info}")
+                            logging.warning(f"'Alpha Vantage' Response: {alpha_vantage_info}")
 
                         return None
                 # If the earnings_period is invalid
@@ -199,18 +436,18 @@ def fetch_earnings_alpha_vantage(api_key, base_url, ticker, data_type="eps", ear
                         # Extract and convert Net Income data from string into floats
                         net_income_data = [float(report.get("netIncome", 0)) for report in annual_reports]
                         
-                        logging.info(f"Fetched {data_type.upper()} Data from Alpha Vantage for {ticker} successfully.")
+                        logging.info(f"Fetched {data_type.upper()} Data from 'Alpha Vantage' for {ticker} successfully.")
 
                         return net_income_data
 
                     # If the response does not contain the 'annualReports' key
                     else:
-                        logging.error(f"No 'annualReports' data available for {ticker} on Alpha Vantage.")
+                        logging.warning(f"No 'annualReports' data available for {ticker} on 'Alpha Vantage'.")
 
                         # Check if the response contains 'Information' key
                         if 'Information' in alpha_vantage_data:
                             alpha_vantage_info = alpha_vantage_data['Information']
-                            logging.error(f"Alpha Vantage Response: {alpha_vantage_info}")
+                            logging.warning(f"'Alpha Vantage' Response: {alpha_vantage_info}")
 
                         return None
 
@@ -226,18 +463,18 @@ def fetch_earnings_alpha_vantage(api_key, base_url, ticker, data_type="eps", ear
                         # Extract and convert Net Income data from string into floats
                         net_income_data = [float(report.get("netIncome", 0)) for report in quarterly_reports]
                         
-                        logging.info(f"Fetched {data_type.upper()} Data from Alpha Vantage for {ticker} successfully.")
+                        logging.info(f"Fetched {data_type.upper()} Data from 'Alpha Vantage'for {ticker} successfully.")
 
                         return net_income_data
 
                     # If the response does not contain the 'quarterlyReports' key
                     else:
-                        logging.error(f"No 'quarterlyReports' data available for {ticker} on Alpha Vantage.")
+                        logging.warning(f"No 'quarterlyReports' data available for {ticker} on 'Alpha Vantage'.")
 
                         # Check if the response contains 'Information' key
                         if 'Information' in alpha_vantage_data:
                             alpha_vantage_info = alpha_vantage_data['Information']
-                            logging.error(f"Alpha Vantage Response: {alpha_vantage_info}")
+                            logging.warning(f"'Alpha Vantage' Response: {alpha_vantage_info}")
 
                         return None
                 # If the earnings_period is invalid
@@ -247,15 +484,208 @@ def fetch_earnings_alpha_vantage(api_key, base_url, ticker, data_type="eps", ear
 
 
             else:
-                logging.error(f"No data available for {ticker} on Alpha Vantage.")
+                logging.error(f"No data available for {ticker} on 'Alpha Vantage'.")
                 return None
         else:
-            logging.error(f"Error fetching data from Alpha Vantage for {ticker}: {response.status_code}")
-            logging.error(f"Negative HTTP response from Alpha Vantage for {ticker}.")
+            logging.error(f"Error fetching data from 'Alpha Vantage' for {ticker}: {response.status_code}")
+            logging.error(f"Negative HTTP response from 'Alpha Vantage' for {ticker}.")
             return None
     
     except Exception as e:
         print(f"Exception occurred: {e}")
+        return None
+
+
+
+def get_income_statement_alpha_vantage(api_key, base_url, ticker, income_statement_period="annual"):
+
+    """
+        Function to fetch Income Statement data from Alpha Vantage.
+        
+        Parameters: 
+            - api_key (str): Your Alpha Vantage API key.
+            - base_url (str): The base URL for the Alpha Vantage API.
+            - ticker (str): The stock ticker symbol (e.g., 'AAPL').
+            - income_statement_period (str): The period for which to fetch the data ('annual' or 'quarterly').
+
+        Returns:
+            - list: A list of Income Statement data fetched from Alpha Vantage.
+    """
+
+    try:
+        # Base URL for Alpha Vantage Income Statement API
+        alpha_vantage_url = base_url
+
+        # Alpha Vantage function to query
+        alpha_vantage_function = "INCOME_STATEMENT"
+
+        # Parameters for the API request
+        params = {
+            "function": alpha_vantage_function,  # Alpha Vantage function to query
+            "symbol": ticker,                    # Ticker symbol (e.g., MSFT)
+            "apikey": api_key,                   # Your API key
+            "datatype": "json"                   # You can choose "map", "json", or "csv"
+        }
+        
+        logging.info(f"Fetching data from 'Alpha Vantage' using function {alpha_vantage_function} (Ticker: {ticker}).")
+        
+        # Sending request to the API
+        response = requests.get(alpha_vantage_url, params=params)
+        
+        # HTTP Status Code for successful response
+        HTTP_OK = 200
+
+        # Check if response is successful
+        if HTTP_OK == response.status_code:
+
+            # Extract the JSON data from the response
+            alpha_vantage_data = response.json()
+
+            # If the Income Statement is "annual"
+            if "annual" == income_statement_period:
+                    
+                # If the response contains the 'annualReports' key, extract the data
+                if 'annualReports' in alpha_vantage_data:
+                    
+                    # Extract the annual reports data
+                    annual_income_statement_reports = alpha_vantage_data['annualReports']
+
+                    return annual_income_statement_reports
+                
+                # If the response does not contain the 'annualReports' key
+                else:
+                    logging.warning(f"No Income Statement 'annualReports' data available on 'Alpha Vantage' (Ticker: {ticker}).")
+                    
+                     # Check if the response contains 'Information' key
+                    if 'Information' in alpha_vantage_data:
+                        alpha_vantage_info = alpha_vantage_data['Information']
+                        logging.warning(f"'Alpha Vantage' Response: {alpha_vantage_info}")
+                    
+                    return None
+
+            # If the Income Statement is "quarterly"
+            elif "quarterly" == income_statement_period:
+                
+                # If the response contains the 'quarterlyReports' key, extract the data
+                if 'quarterlyReports' in alpha_vantage_data:
+                    
+                    # Extract the quarterly reports data
+                    quarterly_income_statement_reports = alpha_vantage_data['quarterlyReports']
+
+                    return quarterly_income_statement_reports
+                
+                # If the response does not contain the 'quarterlyReports' key
+                else:
+                    logging.error(f"No Income Statement 'quarterlyReports' data available on 'Alpha Vantage' (Ticker: {ticker}).")
+                    
+                    # Check if the response contains 'Information' key
+                    if 'Information' in alpha_vantage_data:
+                        alpha_vantage_info = alpha_vantage_data['Information']
+                        logging.error(f"'Alpha Vantage'Response: {alpha_vantage_info}")
+                    
+                    return None
+                
+            else:
+                logging.error(f"Invalid Income Statement period '{income_statement_period}' specified. Please choose 'annual' or 'quarterly' (Ticker: {ticker}).")
+                return None
+
+    except Exception as e:
+        logging.error(f"Error fetching Income Statement data from 'Alpha Vantage' (Ticker: {ticker}): {e}")
+        return None
+
+
+
+def get_balance_sheet_alpha_vantage(api_key, base_url, ticker, balance_sheet_period="annual"):
+
+    """
+        Function to fetch Balance Sheet data from Alpha Vantage.
+        
+        Parameters: 
+            - api_key (str): Your Alpha Vantage API key.
+            - base_url (str): The base URL for the Alpha Vantage API.
+            - ticker (str): The stock ticker symbol (e.g., 'AAPL').
+            - balance_sheet_period (str): The period for which to fetch the data ('annual' or 'quarterly').
+
+        Returns:
+            - list: A list of Balance Sheet data fetched from Alpha Vantage.
+    """
+
+    try:
+        # Base URL for Alpha Vantage Balance Sheet API
+        alpha_vantage_url = base_url
+
+        # Alpha Vantage function to query
+        alpha_vantage_function = "BALANCE_SHEET"
+
+        # Parameters for the API request
+        params = {
+            "function": alpha_vantage_function,  # Alpha Vantage function to query
+            "symbol": ticker,                    # Ticker symbol (e.g., MSFT)
+            "apikey": api_key,                   # Your API key
+            "datatype": "json"                   # You can choose "map", "json", or "csv"
+        }
+        
+        logging.info(f"Fetching data from 'Alpha Vantage' using function {alpha_vantage_function} (Ticker: {ticker}).")
+        
+        # Sending request to the API
+        response = requests.get(alpha_vantage_url, params=params)
+        
+        # HTTP Status Code for successful response
+        HTTP_OK = 200
+
+        # Check if response is successful
+        if HTTP_OK == response.status_code:
+
+            # Extract the JSON data from the response
+            alpha_vantage_data = response.json()
+
+            # If the Balance Sheet is "annual"
+            if "annual" == balance_sheet_period:
+                    
+                # If the response contains the 'annualReports' key, extract the data
+                if 'annualReports' in alpha_vantage_data:
+                    
+                    # Extract the annual reports data
+                    annual_balance_sheet_reports = alpha_vantage_data['annualReports']
+
+                    return annual_balance_sheet_reports
+                
+                # If the response does not contain the 'annualReports' key
+                else:
+                    logging.error(f"No Balance Sheet 'annualReports' data available on 'Alpha Vantage' (Ticker: {ticker}).")
+                    
+                     # Check if the response contains 'Information' key
+                    if 'Information' in alpha_vantage_data:
+                        alpha_vantage_info = alpha_vantage_data['Information']
+
+                        logging.error(f"'Alpha Vantage' Response: {alpha_vantage_info}")
+            
+            elif "quarterly" == balance_sheet_period:
+                
+                # If the response contains the 'quarterlyReports' key, extract the data
+                if 'quarterlyReports' in alpha_vantage_data:
+                    
+                    # Extract the quarterly reports data
+                    quarterly_balance_sheet_reports = alpha_vantage_data['quarterlyReports']
+
+                    return quarterly_balance_sheet_reports
+                
+                # If the response does not contain the 'quarterlyReports' key
+                else:
+                    logging.error(f"No Balance Sheet 'quarterlyReports' data available on 'Alpha Vantage' (Ticker: {ticker}).")
+                    
+                    # Check if the response contains 'Information' key
+                    if 'Information' in alpha_vantage_data:
+                        alpha_vantage_info = alpha_vantage_data['Information']
+
+                        logging.error(f"'Alpha Vantage' Response: {alpha_vantage_info}")
+
+            else:
+                logging.error(f"Invalid Balance Sheet period '{balance_sheet_period}' specified. Please choose 'annual' or 'quarterly' (Ticker: {ticker}).")
+                return None
+
+    except Exception as e:
+        logging.error(f"Error fetching Balance Sheet data from 'Alpha Vantage' (Ticker: {ticker}): {e}")
         return None
 
 
@@ -296,8 +726,8 @@ def fetch_historical_net_income(stock):
         # Same quarter from the previous year net income (4 quarters ago)
         previous_year_quarter = quarter_income_data[4]
 
-        logging.info(f"Quarterly Latest Net Income (Ticker: {stock.ticker}): {"{:,.2f}".format(latest_quarter)} USD")
-        logging.info(f"Quarterly Same Previous Year Net Income (Ticker: {stock.ticker}): {"{:,.2f}".format(previous_year_quarter)} USD")
+        logging.debug(f"Quarterly Latest Net Income (Ticker: {stock.ticker}): {"{:,.2f}".format(latest_quarter)} USD")
+        logging.debug(f"Quarterly Same Previous Year Net Income (Ticker: {stock.ticker}): {"{:,.2f}".format(previous_year_quarter)} USD")
 
         net_income_data_quart = [latest_quarter, previous_year_quarter]
         
@@ -340,90 +770,6 @@ def fetch_historical_net_income(stock):
 
 
 
-# Function to fetch earnings growth directly from yfinance for comparison
-def fetch_earnings_growth_yfinance (stock_info, ticker):
-
-    # Fetch earnings growth directly from yfinance for comparison
-    earnings_growth_yfinance_raw = stock_info.get("earningsGrowth", None)
-    # Convert to percentage
-    earnings_growth_yfinance = earnings_growth_yfinance_raw * 100 if earnings_growth_yfinance_raw is not None else None
-    
-    if earnings_growth_yfinance:
-        logging.info(f"Earnings Growth from yfinance (Ticker: {ticker}): {round(earnings_growth_yfinance, 2)} %")
-    else:
-        logging.info(f"Earnings Growth from yfinance (Ticker: {ticker}): N/A")
-
-    return earnings_growth_yfinance
-
-
-
-
-# Function to calculate Earnings Growth YoY (Year over Year Growth) using Net Income
-def calc_earnings_growth_yoy(stock, ticker, config):
-
-    # Initialize earnings growth YoY calculation values
-    earnings_growth_yoy_quart_calc = None
-
-    # Initialize earnings growth YoY calculation values
-    earnings_growth_yoy_annual_calc = None
-
-    # Fetch net income values for YoY calculation from financials (current and previous year)
-    net_income_data_quart, net_income_data_annual = fetch_historical_net_income(stock)
-
-
-    # -------------- Quarterly Earnings Growth YoY Calculcation --------------
-
-    # Check if the net income data is null
-    if net_income_data_quart is None:
-        logging.warning(f"Quarterly Net Income data not found for {ticker}.")
-        earnings_growth_yoy_quart_calc = None
-
-    else:
-
-        # Extract net income values for calculation
-        current_quart_net_income = net_income_data_quart[0]
-        previous_quart_net_income = net_income_data_quart[1]
-
-        # Calculate YoY growth using net income values
-        earnings_growth_yoy_quart_calc = calc_yoy(current_quart_net_income, previous_quart_net_income)
-        # Calculcate to percentage
-        earnings_growth_yoy_quart_calc = earnings_growth_yoy_quart_calc * 100 if earnings_growth_yoy_quart_calc is not None else None
-
-        if earnings_growth_yoy_quart_calc:
-            logging.info(f"Calculated Quarterly Earnings Growth YoY (Ticker: {ticker}): {round(earnings_growth_yoy_quart_calc, 2)} %")
-        else:
-            logging.info(f"Calculated Quarterly Earnings Growth YoY (Ticker: {ticker}): N/A")
-
-
-    # -------------- Annual Earnings Growth YoY Calculcation ----------------
-
-    # Check if the net income data is null
-    if net_income_data_annual is None:
-        logging.warning(f"Annual Net Income data not found for {ticker}.")
-        earnings_growth_yoy_annual_calc = None
-
-    else:
-
-        # Extract net income values for calculation
-        current_annual_net_income = net_income_data_annual[0]
-        previous_annual_net_income = net_income_data_annual[1]
-
-        # Calculate YoY growth using net income values
-        earnings_growth_yoy_annual_calc = calc_yoy(current_annual_net_income, previous_annual_net_income)
-        # Calculcate to percentage
-        earnings_growth_yoy_annual_calc = earnings_growth_yoy_annual_calc * 100 if earnings_growth_yoy_annual_calc is not None else None
-
-        if earnings_growth_yoy_annual_calc:
-            logging.info(f"Calculated Annual Earnings Growth YoY (Ticker: {ticker}): {round(earnings_growth_yoy_annual_calc, 2)} %")
-        else:
-            logging.info(f"Calculated Annual Earnings Growth YoY (Ticker: {ticker}): N/A")
-
-
-    # Initialize earnings growth YoY calculation values
-    return earnings_growth_yoy_quart_calc, earnings_growth_yoy_annual_calc
-
-
-
 # Function to calculate YoY Growth (Year over Year Growth) using Net Income
 # Returns the YoY growth as fraction (e.g., 0.05 for 5% growth)
 def calc_yoy (current_value, previous_value):
@@ -452,83 +798,111 @@ def calc_yoy (current_value, previous_value):
 
 
 
-
-def calc_evar(config, stock, ticker, evar_period, evar_source):
+def get_earnings (stock, ticker, earnings_type, earnings_period_req, av_api_key, av_base_url):
     """
-    Calculate Earnings Variability (EVAR), i.e. standard deviation, using 'Basic EPS' growth from Yahoo Finance.
-    The calculation is done over the period defined by evar_period (e.g., 5 years).
-    If there are fewer periods than requested, the function uses the available periods.
+        Get Earnings data (EPS or Net Income) from Yahoo Finance or Alpha Vantage for a specified earnings period.
+
+        Parameters:
+            - stock (yf.Ticker): A yfinance Ticker object representing the stock.
+            - ticker (str): The stock ticker symbol.
+            - earnings_period_req (int): The number of earnings periods (in years) requested.
+            - earnings_type (str): The type of earnings data to fetch: "eps" for EPS, "net_income" for Net Income.
+            - av_api_key (str): The Alpha Vantage API key.
+            - av_base_url (str): The base URL for the Alpha Vantage API.
+
+        Returns:
+            - list: A list of Earnings data (EPS or Net Income) fetched from Yahoo Finance or Alpha Vantage
     
-    Parameters:
-        - stock (yf.Ticker): A yfinance Ticker object representing the stock.
-        - ticker (str): The stock ticker symbol.
-        - evar_period (int): The number of periods (years or quarters) to use for the calculation of EVAR.
-        - evar_source (str): The source for the growth calculation: "eps" for EPS growth, "net_income" for Net Income growth.
-    
-    Returns:
-        - float: The calculated Earnings Variability (EVAR) in fractions.
     """
-    
-    earnings_annual_list = None
-
-    logging.info(f"Calculating EVAR for {ticker} using {evar_source.upper()} growth.")
-
-    # Check if there are enough periods (data points) for EVAR calculation
-    if evar_period < 3:
-        logging.warning(f"Not enough data to calculate EVAR for {ticker}. At least 3 periods are required.")
-        return None
-    
-    # debugging
-    if ticker == "INVX":
-        print("Debugging INVX")
-
-    # ToDo: Check the missing Net Income data for ROE calculcation for INVX
-    # ToDo: Validate Standard Deviation Calucations for all stocks
-
 
     try:
         # Fetch Income Statement from Yahoo Finance
         income_statement_annual = stock.financials.T  # Annual financial data (transpose to get dates as rows)
+        
         # Check if there is data in the income statement
         if income_statement_annual.empty:
-            logging.warning(f"No Annual Income Statement data found for {ticker}.")
+            logging.error(f"No Annual Income Statement data found on Yahoo Finance (Ticker: {ticker}).")
             return None
+        
+        logging.debug(f"Fetching Earnings data ({earnings_type.upper()}) for {earnings_period_req} years period (Ticker: {ticker}).")
 
         # ------------------- EPS -------------------
-        # EVAR Calculation using EPS Growth
-        if evar_source == "eps":
+        if earnings_type == "eps":
 
             # Check if Basic EPS is available in the income statement
             if 'Basic EPS' in income_statement_annual.columns:
-
+                
+                eps_basic_annual_list = None
+ 
                 # Extract the 'Basic EPS' data from the income statement
-                eps_basic_annual_list = income_statement_annual['Basic EPS'].tolist()
+                eps_basic_annual_yf = income_statement_annual['Basic EPS']
 
-                # Ensure there's enough earnings data for the specified periods (minimum 3)
-                if len(eps_basic_annual_list) < 3:
-                    logging.warning(f"Not enough 'Basic EPS' data for {ticker} to calculate EVAR. Need at least 3 earnings periods.")
-                    logging.warning(f"Using fallback data source.")
+                # Check if the fetched EPS list from Yahoo Finance is empty
+                if eps_basic_annual_yf is None:
+                    logging.error(f"'Basic EPS' data from Yahoo Finance is empty or missing (Ticker: {ticker}).")
+                    return None
+
+                # Convert the EPS data to a list
+                eps_basic_annual_yf = eps_basic_annual_yf.tolist()
+
+                # Remove 'nan' values from the EPS list
+                eps_basic_annual_yf = [eps for eps in eps_basic_annual_yf if not math.isnan(eps)]
+
+                # Ensure there's enough earnings data for the requested periods
+                if len(eps_basic_annual_yf) >= earnings_period_req:
+
+                    # Set the EPS list to the Yahoo Finance data for the requested periods
+                    eps_basic_annual_list = eps_basic_annual_yf[:earnings_period_req]
+
+                # If there are fewer earnings periods than requested
+                elif len(eps_basic_annual_yf) < earnings_period_req:
+                    logging.warning(f"Not enough 'Basic EPS' data available (Ticker: {ticker}) on Yahoo Finance. Need at least {earnings_period_req} earning periods.")
+                    logging.warning(f"Fetching from a fallback data source.")
 
                     # Fallback to Alpha Vantage to fetch EPS data
-                    eps_basic_annual_list = fetch_earnings_alpha_vantage (
-                        config['AlphaVantage']['API_Key'], 
-                        config['AlphaVantage']['Base_URL'], 
+                    eps_basic_annual_av = fetch_earnings_alpha_vantage (
+                        av_api_key, 
+                        av_base_url, 
                         ticker, 
                         "eps",
                         "annual"
                     )
 
                     # Check if the fetched EPS list from Alpha Vantage is empty
-                    if eps_basic_annual_list is None:
-                        logging.error(f"'Basic EPS' data for {ticker} is missing or empty.")
-                        return None
+                    if eps_basic_annual_av is None:
+                        logging.warning(f"'Basic EPS' data from 'Alpha Vantage' is empty or missing (Ticker: {ticker}).")
+                        
+                        logging.warning(f"Using Yahoo Finance data as fallback.")
 
+                        # If the Alpha Vantage data is empty, then at least return the Yahoo Finance data
+                        return eps_basic_annual_yf
 
-                # Remove 'nan' values from the EPS list
-                eps_basic_annual_list = [eps for eps in eps_basic_annual_list if not math.isnan(eps)]
-                
-                # Set the earnings_annual_list to the Basic EPS list
-                earnings_annual_list = eps_basic_annual_list
+                    # Remove 'nan' values from the Alpha Vantage EPS list
+                    eps_basic_annual_av = [eps for eps in eps_basic_annual_av if not math.isnan(eps)]
+
+                    # Check if Alpha Vintage dataset is bigger than Yahoo Finance
+                    # If so, use the Alpha Vantage data
+                    if len(eps_basic_annual_av) > len(eps_basic_annual_yf):
+
+                        # Ensure there's enough earnings data for the requested periods
+                        if len(eps_basic_annual_av) >= earnings_period_req:
+
+                            # Set the EPS list to the Alpha Vantage data for the requested periods
+                            eps_basic_annual_list = eps_basic_annual_av[:earnings_period_req]
+
+                        # If there's not enough requested data, use the available data
+                        else:
+                            # Get the number of available data points
+                            earnings_available_cnt = len(eps_basic_annual_av)
+                            # Set the EPS list to the available data
+                            eps_basic_annual_list = eps_basic_annual_av[:len(earnings_available_cnt)]
+
+                    # If not, use the Yahoo Finance data
+                    else:
+                        eps_basic_annual_list = eps_basic_annual_yf
+
+                # Return the 'Basic EPS' list
+                return eps_basic_annual_list
 
             # If 'Basic EPS' data is not available in the income statement
             else:
@@ -536,104 +910,228 @@ def calc_evar(config, stock, ticker, evar_period, evar_source):
                 return None
         
         # ------------------- Net Income -------------------
-        # EVAR Calculation using Net Income Growth
-        elif evar_source == "net_income":
+        elif earnings_type == "net_income":
 
             if 'Net Income' in income_statement_annual.columns:
 
+                net_income_annual_list = None
+
                 # Extract the 'Net Income' data from the income statement
-                net_income_annual_list = income_statement_annual['Net Income'].tolist()
+                net_income_annual_yf = income_statement_annual['Net Income']
+
+                if net_income_annual_yf is None:
+                    logging.error(f"'Net Income' data from Yahoo Finance is empty or missing (Ticker: {ticker}).")
+                    return None
+                
+                # Convert the Net Income data to a list
+                net_income_annual_yf = net_income_annual_yf.tolist()
+
+                # Remove 'nan' values from the Net Income list
+                net_income_annual_yf = [net_income for net_income in net_income_annual_yf if not math.isnan(net_income)]
+
+                # Ensure there's enough earnings data for the requested periods
+                if len(net_income_annual_yf) >= earnings_period_req:
+
+                    # Set the earnings_annual_list to the Net Income list for the requested periods
+                    net_income_annual_list = net_income_annual_yf[:earnings_period_req]
 
                 # Ensure there's enough earnings data for the specified periods (minimum 3)
-                if len(net_income_annual_list) < 3:
-                    logging.warning(f"Not enough 'Net Income' data for {ticker} to calculate EVAR. Need at least 3 earnings periods.")
-                    logging.warning(f"Using fallback data source.")
+                elif len(net_income_annual_yf) < earnings_period_req:
+                    logging.warning(f"Not enough 'Net Income' data available (Ticker: {ticker}) on Yahoo Finance. Need at least {earnings_period_req} earning periods.")
+                    logging.warning(f"Fetching from a fallback data source.")
 
                     # Fallback to Alpha Vantage to fetch Net Income data
-                    net_income_annual_list = fetch_earnings_alpha_vantage (
-                        config['AlphaVantage']['API_Key'], 
-                        config['AlphaVantage']['Base_URL'], 
+                    net_income_annual_av = fetch_earnings_alpha_vantage (
+                        av_api_key, 
+                        av_base_url, 
                         ticker,
                         "net_income",
                         "annual"
                     )
 
                     # Check if the fetched Net Income list from Alpha Vantage is empty
-                    if net_income_annual_list is None:
-                        logging.error(f"'Net Income' data for {ticker} from Alpha Vantage is empty or missing.")
-                        return None
+                    if net_income_annual_av is None:
+                        logging.warning(f"'Net Income' data from 'Alpha Vantage' is empty or missing (Ticker: {ticker}).")
+                        
+                        logging.warning(f"Using Yahoo Finance data as fallback.")
 
-                # Remove 'nan' values from the Net Income list
-                net_income_annual_list = [net_income for net_income in net_income_annual_list if not math.isnan(net_income)]
-                
+                        # If the Alpha Vantage data is empty, then at least return the Yahoo Finance data
+                        return net_income_annual_yf
+                    
+                    # Remove 'nan' values from the Alpha Vantage Net Income list
+                    net_income_annual_av = [net_income for net_income in net_income_annual_av if not math.isnan(net_income)]
+                    
+                    # Check if Alpha Vintage dataset is bigger than Yahoo Finance
+                    # If so, use the Alpha Vantage data
+                    if len(net_income_annual_av) > len(net_income_annual_yf):
+
+                        # Ensure there's enough earnings data for the requested periods
+                        if len(net_income_annual_av) >= earnings_period_req:
+
+                            # Set the Net Income list to the Alpha Vantage data for the requested periods
+                            net_income_annual_list = net_income_annual_av[:earnings_period_req]
+
+                        # If there's not enough requested data, use the available data
+                        else:
+                            # Get the number of available data points
+                            earnings_available_cnt = len(net_income_annual_av)
+                            # Set the Net Income list to the available data
+                            net_income_annual_list = net_income_annual_av[:len(earnings_available_cnt)]
+                    
+                    # If not, use the Yahoo Finance data
+                    else:
+                        net_income_annual_list = net_income_annual_yf
+
                 # Set the earnings_annual_list to the Net Income list
-                earnings_annual_list = net_income_annual_list
+                o_earnings_annual_list = net_income_annual_list
+
+                # Return the 'Net Income' list
+                return o_earnings_annual_list
 
             else:
                 logging.warning(f"Cannot find 'Net Income' data for {ticker}.")
                 return None
 
+    except Exception as e:
+        logging.error(f"Error fetching Earnings for {ticker}: {e}")
+        return None
+
+
+
+def calc_earnings_growth (ticker, earnings_list):
+
+    """
+    
+    Calculate Earnings Growth using 'Basic EPS' or 'Net Income' from Yahoo Finance for a specified earnings period.
+
+    http://fortmarinus.com/blog/1214/#edit-5374639318
+    
+    Parameters:
+        - ticker (str): The stock ticker symbol.
+        - earnings_list (list): A list of Earnings data (EPS or Net Income).
+
+    Returns:
+        - list: A list of Earnings Growth YoY values for a specified earnings period.
+    """
+
+    # Initialize the list to hold the calculated Earnings Growth YoY values
+    o_earnings_growths = []
+
+    # Minimum number of data points required for Earnings Growth calculation
+    MIN_EARNINGS_DATA_POINTS = 2
+
+    try:
+
+        if earnings_list is None:
+            logging.error(f"Cannot calculate Earnings Growth. No Earnings data available (Ticker: {ticker}).")
+            return None
 
         # Check if there are enough earnings data points, else use the available data
-        available_data_periods = len(earnings_annual_list)
-        
-        # If available data periods are less than the requested EVAR period
-        if available_data_periods < evar_period:
-             # Adjust the period to the available data
-            earnings_period = available_data_periods
-        # If available data periods are equal or more than the requested EVAR period
-        else:
-            # Use the requested EVAR period
-            earnings_period = evar_period
+        available_data_periods = len(earnings_list)
 
-        logging.info(f"Calculacting EVAR over {evar_period} year period for {ticker}.")
+        # Check if there are enough earnings periods (data points) for Earnings Growth calculation
+        if available_data_periods < MIN_EARNINGS_DATA_POINTS:
+            logging.error(f"Not enough data to calculate Earnings Growth (Ticker: {ticker}). At least {MIN_EARNINGS_DATA_POINTS} periods are required.")
+            return None
         
-        # Select the latest 'earnings_period' data points (from the available data)
-        earnings_data_period = earnings_annual_list[:earnings_period]
-
-        # Step 1: Calculate EPS Growth Year-on-Year (YoY) for each year
+        # Calculate EPS Growth Year-on-Year (YoY) for each year
         #   The EPS growth is calculated as:
-        #   EPS Growth = (EPS_i - EPS_(i-1)) / EPS_(i-1)
+        #   EPS Growth = (EPS_i - EPS_(i+1)) / abs ( EPS_(i+1) )
         # Where:
         # - EPS_i = Earnings per share for the current year
-        # - EPS_(i-1) = Earnings per share for the previous year
-        earnings_growth_yoy = []
-        for i in range(0, len(earnings_data_period) - 1):
-            earnings_growth = (earnings_data_period[i] - earnings_data_period[i + 1]) / earnings_data_period[i + 1]
-            earnings_growth_yoy.append(earnings_growth)
+        # - EPS_(i+1) = Earnings per share for the previous year
+        #
+        # Adjusting the denominator to the absolute value helps prevent misleading results.
+        # For example, if the EPS for the previous year is negative,
+        # but the EPS for the current year is postive,
+        # then the growth rate would be mistakenly calculated as negative.
+        #
+        # For more details see: http://fortmarinus.com/blog/1214/#edit-5374639318
+        for i in range(0, available_data_periods - 1):
+            earnings_growth = (earnings_list[i] - earnings_list[i + 1]) / abs(earnings_list[i + 1])
+            o_earnings_growths.append(earnings_growth)
 
-        # Step 2: Calculate the mean of EPS growth
-        # The mean of EPS growth is calculated by averaging the EPS growth values (calculated in Step 1)
+        # Return the calculated Earnings Growth YoY List
+        return o_earnings_growths
+
+    except Exception as e:
+        logging.error(f"Error calculating Earnings Growth for {ticker}: {e}")
+        return None
+
+
+
+def calc_evar(ticker, earnings_growths_yoy):
+    """
+    Calculate Earnings Variability (EVAR), i.e. standard deviation, based on the MSCI methodology.
+    MSCI calculates Earnings Variability as the standard deviation of year-on-year Earnings per Share (EPS) growth 
+    in the last five fiscal years.
+
+    The calculation is done over the period defined by evar_period (e.g., 5 years).
+    If there are fewer periods than requested, the function uses the available periods.
+
+    MSCI calculates Earnings Variability as the standard deviation of year-on-year Earnings per Share (EPS) growth.
+
+    Formula:
+        EVAR = sqrt( Σ( (EPS_g_i - EPS_g_m)^2 ) / (n - 1) )
+
+    Where:
+        - EPS_g_i = (EPS_i - EPS_{i-1}) / EPS_{i-1} : Year-on-year EPS growth for the i-th year.
+        - EPS_g_m = mean(EPS_g_i) : Mean of the year-on-year EPS growth rates.
+        - n = number of EPS growth data points (e.g., 4 for 5 fiscal years).
+
+    Parameters:
+        - ticker (str): The stock ticker symbol.
+        - evar_type (str): The source for the growth calculation: "eps" for EPS growth, "net_income" for Net Income growth.
+    
+    Returns:
+        - float: The calculated Earnings Variability (EVAR) in fractions.
+    """
+    
+    EARNINGS_GROWTH_MIN_DATA_POINTS = 2
+
+
+    if earnings_growths_yoy is None:
+        logging.error(f"Cannot calculcate EVAR. No Earnings Growth data available (Ticker: {ticker}).")
+        return None
+
+    earnings_growth_data_points_cnt = len(earnings_growths_yoy)
+
+    # Check if there are enough earnings periods (data points) for EVAR calculation
+    if earnings_growth_data_points_cnt < EARNINGS_GROWTH_MIN_DATA_POINTS:
+        logging.warning(f"Not enough Earnings Growth data to calculate EVAR for {ticker}. At least {EARNINGS_GROWTH_MIN_DATA_POINTS} data points are required.")
+        return None
+
+
+    logging.info(f"Calculating Earnings Variability (EVAR) over {earnings_growth_data_points_cnt} year period (Ticker: {ticker}).")
+
+    try:
+
+        # Step 1: Calculate the mean of Earnings Growth (EPS or Net Income) 
+        # The mean of EPS growth is calculated by averaging the EPS growth values over the period.
         #  - EPS_mean = sum(EPS_growth_1, EPS_growth_2, ..., EPS_growth_n) / n
-        mean_earnings_growth = np.mean(earnings_growth_yoy)
+        mean_earnings_growth = np.mean(earnings_growths_yoy)
         
-        # Step 3: Calculate the variance of EPS growth (for standard deviation)
+        # Step 2: Calculate the variance of Earnings growth (for standard deviation)
         # Variance is calculated as:
         # Variance = ( (EPS_growth_1 - Mean_Growth)^2 + (EPS_growth_2 - Mean_Growth)^2 + ... + (EPS_growth_n - Mean_Growth)^2 ) / (n-1)
         # Where:
         # - EPS_growth_i = EPS growth for the i-th year
         # - Mean_Growth = The average EPS growth (calculated in Step 2)
         # - n = Number of periods (years)
-        variance_sum = 0
+        earnings_variance_sum = 0
 
-        for earnings_growth in earnings_growth_yoy:
+        for earnings_growth in earnings_growths_yoy:
             # Calculate the sum of squared differences
-            variance_sum += (earnings_growth - mean_earnings_growth) ** 2 
+            earnings_variance_sum += (earnings_growth - mean_earnings_growth) ** 2
 
 
         # Calculate the variance by dividing the sum of squared differences by the number of periods (N-1)
-        variance = variance_sum / (len(earnings_growth_yoy) - 1)
+        variance = earnings_variance_sum / (earnings_growth_data_points_cnt - 1)
         
         # -------------------- Step 4: Calculate Earnings Variability (EVAR) --------------------
         # Earnings Variability (EVAR) is the square root of variance (Standard Deviation):
         # - EVAR = sqrt(Variance)
         evar_frac = np.sqrt(variance)
-
-        # Convert EVAR to percentage
-        evar_perct = evar_frac * 100
-        
-        # Log the result
-        logging.info(f"Earnings Variability ({evar_source}) for {ticker}: {evar_perct:.2f}%")
         
         # Return EVAR as a fraction
         return evar_frac
@@ -644,25 +1142,111 @@ def calc_evar(config, stock, ticker, evar_period, evar_source):
 
 
 
-# Function to calculate P/CF (Price to Cash Flow)
-def calculate_pcf(i_stock):
+def calc_cagr(ticker, earnings):
+    """
+    Calculate the Compound Annual Growth Rate (CAGR) from a list of earnings values.
 
-    # Get the latest market price (last closing price)
-    market_price = i_stock.history(period="1d")["Close"].iloc[-1] if not i_stock.history(period="1d").empty else None
+    Formula Used:
+        CAGR = ((F - I + |I|) / |I| ) ^ (1/n) - 1
 
-    # Get the operating cash flow and calculate cash flow per share
-    try:
-        operating_cash_flow = i_stock.cashflow.loc['Total Cash From Operating Activities'].iloc[0] if 'Total Cash From Operating Activities' in i_stock.cashflow.index else None
-        shares_outstanding = stock_info.get("sharesOutstanding", None)
-    except Exception as e:
-        operating_cash_flow = None
-        shares_outstanding = None
-        print(f"Error calculating cash flow for {ticker}: {e}")
+    Where:
+        - F = Final Value (Last value in the series)
+        - I = Initial Value (First value in the series)
+        - n = Number of increments YoY, i.e. time span between the first and last year
+              e.g. for 4 years (2021 ... 2024), n = 2024 - 2021 = 3
+    
+        Conditions to Avoid Imaginary Numbers:
+            - The ratio (F - I + |I|) / |I| must be non-negative.
 
-    if market_price is None or operating_cash_flow is None or shares_outstanding is None or shares_outstanding == 0:
+        For more details see: http://fortmarinus.com/blog/1214/#edit-5374639318
+    
+    Parameters:
+        - earnings (list): A list containing earnings growth elements.
+
+    Returns:
+        - float: The CAGR as a decimal (non-percentage) value.
+    """
+
+    MIN_EARNINGS_GROWTH_DATA_POINTS = 2
+    
+    # Check if the earnings growth list is empty
+    if earnings is None:
+        logging.error(f"Cannot calculate CAGR. No Earnings Growth data available (Ticker: {ticker}).")
         return None
-    cash_flow_per_share = operating_cash_flow / shares_outstanding
-    return market_price / cash_flow_per_share if cash_flow_per_share != 0 else None
+    
+    # Check if there are enough earnings periods (data points) for CAGR calculation
+    if len(earnings) < MIN_EARNINGS_GROWTH_DATA_POINTS:
+        logging.error(f"Not enough Earning Growth data points to calculate CAGR (Ticker: {ticker}). At least {MIN_EARNINGS_GROWTH_DATA_POINTS} data points are required.")
+        return None
+    
+    logging.info(f"Calculating Compound Annual Growth Rate (CAGR) (Ticker: {ticker}).")
+
+    try:
+
+        # Calculate the CAGR using the formula if both Ending and Beginning values are positive:
+        #   CAGR = (Ending Value / Beginning Value) ^ (1 / n) - 1
+        # Where:
+        #   - Ending Value = The last value in the series
+        #   - Beginning Value = The first value in the series
+        #   - n = Number of increments YoY (earnings period - 1), i.e. time span between first and last year
+        #         e.g. for 4 years (2021 ... 2024), n = 2024 - 2021 = 3
+        #
+
+        # Calculate the CAGR using the ending and beginning earning growth values
+        end_earnings_growth = earnings[0]
+        # The beginning earnings value
+        start_earnings_growth = earnings[-1]
+        # Time span between the first and last year
+        # n = len(earnings) - 1 because the number of periods is one less than the number of data points.
+        n = len(earnings) - 1
+
+
+
+        # If both End and Start values are positive, use standard CAGR formula
+        if start_earnings_growth > 0 and end_earnings_growth > 0:
+            cagr = ( (end_earnings_growth / start_earnings_growth) ** (1 / n) ) - 1
+            return cagr
+
+
+        # If both values are negative, and
+        # earning losses have worsened
+        if  (start_earnings_growth < 0 and end_earnings_growth < 0) and \
+            (abs(end_earnings_growth) > abs(start_earnings_growth)):
+
+            cagr = -1 * ((abs(end_earnings_growth) / abs(start_earnings_growth)) ** (1 / n) - 1)
+            return cagr
+
+
+        # If earnings are transitioning from negative to positive or both positive
+        #
+        # Calculate the CAGR using the formula:
+        #     CAGR = ((F - I + |I|) / |I| ) ^ (1/n) - 1
+        # Where:
+        #     - F = Final Value (Last value in the series)
+        #     - I = Initial Value (First value in the series)
+        #     - n = Number of periods (years)
+        #
+        # For more details see: http://fortmarinus.com/blog/1214/#edit-5374639318
+        #
+        cagr_ratio = (end_earnings_growth - start_earnings_growth + abs(start_earnings_growth)) / abs(start_earnings_growth)
+
+        # Prevent CAGR calculation for negative values, as it would result in an imaginary number
+        if cagr_ratio < 0:
+            logging.error(f"Cannot calculate CAGR (Ticker: {ticker}). The ratio (F - I + |I|) / |I| must be non-negative.")
+            return None
+
+        cagr = (cagr_ratio) ** (1 / n) - 1
+
+        # Return the calculated CAGR
+        return cagr
+
+    except ZeroDivisionError:
+        logging.error(f"Error calculating CAGR (Ticker: {ticker}): Division by zero detected.")
+        return None
+
+    except Exception as e:
+        logging.error(f"Error calculating CAGR (Ticker: {ticker}): {e}")
+        return None
 
 
 
@@ -675,7 +1259,7 @@ def get_roe (stock_info, ticker):
             - ticker (str): The stock ticker symbol.
 
         Returns:
-            - float: The Return on Equity (ROE) as a percentage
+            - float: The Return on Equity (ROE) as a fraction
     """
     roe_yfinance = None
 
@@ -688,7 +1272,7 @@ def get_roe (stock_info, ticker):
         roe_yfinance_percent = roe_yfinance_raw * 100
         logging.info(f"ROE - yFinance (Ticker: {ticker}): {round(roe_yfinance_percent, 2)} %")
 
-        roe_yfinance = roe_yfinance_percent
+        roe_yfinance = roe_yfinance_raw
 
     # If ROE from Yahoo Finance is not available
     else:
@@ -700,112 +1284,647 @@ def get_roe (stock_info, ticker):
 
 
 
-def calc_roe (stock, ticker, config):
+
+def get_roa (stock_info, ticker):
+    """
+        Get Return on Assets (ROA) from Yahoo Finance data.
+
+        Parameters:
+            - stock_info (dict):
+            - ticker (str): The stock ticker symbol.
+
+        Returns:
+            - float: The Return on Assets (ROA) as a fraction
+    """
+    roa_yfinance = None
+
+    # -------------- ROA from Yahoo Finance --------------
+    # Fetch ROA from the Yahoo Finance data
+    roa_yfinance_raw = stock_info.get("returnOnAssets", None)
+
+    # If ROE from Yahoo Finance is available
+    if roa_yfinance_raw:
+        roa_yfinance_percent = roa_yfinance_raw * 100
+        logging.info(f"ROA - yFinance (Ticker: {ticker}): {round(roa_yfinance_percent, 2)} %")
+
+        roa_yfinance = roa_yfinance_raw
+    else:
+        logging.warning(f"ROA - yFinance (Ticker: {ticker}): N/A")
+
+        roa_yfinance = None
+
+
+    return roa_yfinance
+
+
+
+def calc_roe (stock, ticker, config, years=4):
     """
         Calculate Return on Equity (ROE) using Net Income and Shareholder's Equity.
+
+            ROE = Net Income / Shareholder's Equity
 
         Parameters:
             - stock (yf.Ticker): A yfinance Ticker object representing the stock.
             - ticker (str): The stock ticker symbol.
             - config (dict): A dictionary containing the configuration settings.
+            - years (int): The number of years to calculate ROE for. Default is 5.
 
         Returns:
-            - float: The calculated Return on Equity (ROE) as a percentage.
+            - float: The calculated Return on Equity (ROE) for the specified range of years, or None if data is missing. Calculated as a fraction.
     """
 
-    roe_calc = None
+    o_roe_calc_list = []
 
+    try:
 
-    # -------------- 1. Get Net Income from Income Statement --------------
+        # -------------- 1. Get Net Income  --------------
 
-    # Initialize the current annual net income
-    current_annual_net_income = None
-
-    # Fetch Net Income and Shareholder's Equity from the Yahoo Finance data
-    net_income_data_quart, net_income_data_annual = fetch_historical_net_income(stock)
-
-    # If the net income data is available
-    if net_income_data_annual:
-
-        # Extract net income value for calculation
-        current_annual_net_income = net_income_data_annual[0]
-
-    # If the net income data from Yahoo Finance is not available
-    else:
-
-        logging.warning(f"ROE Calculcation (Ticker: {ticker}): Yahoo Finance Data for Net Income is missing")
-        logging.warning(f"Using fallback data source.")
-    
-        net_income_data_annual_av = fetch_earnings_alpha_vantage (
-            config['AlphaVantage']['API_Key'], 
-            config['AlphaVantage']['Base_URL'], 
+        net_income_list = get_earnings (
+            stock,
             ticker,
             "net_income",
-            "annual"
+            config['Earnings_Period'],
+            config['AlphaVantage']['API_Key'], 
+            config['AlphaVantage']['Base_URL'], 
         )
 
-        # If the net income data from Alpha Vantage is not available
-        if net_income_data_annual_av is None:
-            logging.error(f"Cannot calculate ROE (Ticker: {ticker}): Data for Net Income is missing")
+
+        # -------------- 2. Get Shareholder's Equity from Balance Sheet --------------
+
+        # Fetch Shareholders' Equity (or Stockholders' Equity) from the balance sheet (annual data)
+        balance_sheet = stock.balance_sheet.T  # Transpose to have dates as rows
+
+        # Get "Stockholders' Equity" from the balance sheet data
+        stockholders_equity_list = balance_sheet['Stockholders Equity'][:years]
+
+        # If Stockholders' Equity is not available, log a warning and set ROE as None
+        if stockholders_equity_list is None:
+            logging.error(f"Cannot calculate ROE (Ticker: {ticker}): Data for Shareholder's Equity is missing")
             return None
 
-        # If the net income data from Alpha Vantage is available
-        # Extract net income value for calculation
-        current_annual_net_income = net_income_data_annual_av[0]
+        # -------------- 3. Calculate ROE --------------
 
+        # Calculate ROE for each year
+        for net_income, stockholders_equity in zip (net_income_list, stockholders_equity_list):
 
-    # -------------- 2. Get Shareholder's Equity from Balance Sheet --------------
+            # ROE = Net Income / Shareholder's Equity
+            roe_calc = (net_income / stockholders_equity)
 
-    # Fetch Shareholders' Equity (or Stockholders' Equity) from the balance sheet (annual data)
-    balance_sheet = stock.balance_sheet.T  # Transpose to have dates as rows
+            o_roe_calc_list.append(roe_calc)
 
-    # Get "Stockholders' Equity" from the balance sheet data
-    stockholders_equity_annual_list = balance_sheet.get('Stockholders Equity', None)
+        return o_roe_calc_list
 
-    # If Stockholders' Equity is not available, log a warning and set ROE as None
-    if stockholders_equity_annual_list is None:
-        logging.error(f"Cannot calculate ROE (Ticker: {ticker}): Data for Shareholder's Equity is missing")
+    except KeyError as e:
+        logging.error(f"KeyError: Missing expected data field in Yahoo Finance for Ticker {ticker}. Error: {e}")
+        return None
+    except Exception as e:
+        logging.error(f"Unexpected error during ROE calculation for Ticker {ticker}: {e}")
         return None
 
 
-    # -------------- 3. Calculate ROE --------------
+import yfinance as yf
 
-    # If both Net Income and Shareholder's Equity are available, calculate ROE
-    if current_annual_net_income and stockholders_equity_annual_list is not None:
 
-        # Calculate ROE using the formula: (Net Income / Shareholder's Equity)
-        stockholders_equity_annual = stockholders_equity_annual_list.iloc[0] if stockholders_equity_annual_list is not None else None
 
-        # If both Net Income and Shareholder's Equity are available, calculate ROE
-        roe_calc = (current_annual_net_income / stockholders_equity_annual)
 
-        logging.info(f"ROE - Calc (Ticker: {ticker}): {round(roe_calc * 100, 2)} %")
+def calc_trailing_eps(stock, ticker, trailing_eps_quarters=4):
+    """
+    Calculate Trailing 12-Month EPS (TTM) for a given stock.
 
-    # If either Net Income or Shareholder's Equity is missing, set ROE as None
-    else:
-        roe_calc = None
-        logging.error(f"ROE - Calc (Ticker: {ticker}): N/A")
+    Parameters:
+        - stock (yfinance.Ticker): The stock object fetched using yfinance.
+        - ticker (str): The stock ticker symbol for logging purposes.
+        - trailing_eps_quarters (int): Number of trailing quarters to calculate EPS TTM (default is 4 quarters).
 
-    return roe_calc
+    Returns:
+        - float: The trailing 12-month EPS value, or None if data is insufficient or unavailable.
+    """
+    
+    o_trailing_eps = 0
+
+    try:
+        # Get quarterly income statement data
+        income_statement = stock.quarterly_financials.T  # Transpose to have dates as rows
+
+        # Check if Basic EPS is available in the income statement
+        if 'Basic EPS' not in income_statement.columns:
+            logging.error(f"Cannot calculate Trailing EPS! EPS data is missing (Ticker: {ticker}).")
+            return None
+
+        # Get the Basic EPS data and clean 'nan' values
+        basic_eps_list = income_statement['Basic EPS'].tolist()
+        basic_eps_list = [eps for eps in basic_eps_list if not math.isnan(eps)]
+
+        # Check if there is enough data for the specified trailing quarters
+        if len(basic_eps_list) < trailing_eps_quarters:
+            logging.error(f"Cannot calculate Trailing EPS! Not enough EPS data for the last {trailing_eps_quarters} quarters (Ticker: {ticker}).")
+            return None
+
+        # Calculate TTM EPS by summing up the latest trailing quarters of EPS data
+        o_trailing_eps = sum(basic_eps_list[:trailing_eps_quarters])
+
+    except KeyError:
+        logging.error(f"Cannot calculate Trailing EPS! EPS data is not available (Ticker: {ticker}).")
+        return None
+
+    return o_trailing_eps
+
+
+
+def calc_quarterly_bvps(stock, ticker):
+    """
+    Calculate Book Value Per Share (BVPS) partially using MSCI methodology (Treasury Shares and Preferred Shares are excluded).
+
+    Formula:
+        BVPS = (Stockholders' Equity - Minority Interest) / Shares Outstanding
+
+    Where:
+        - Stockholders' Equity: Total equity available to shareholders (excluding preferred shares and treasury shares).
+        - Minority Interest: Portion of equity owned by minority shareholders, excluded from BVPS for common shareholders.
+        - Treasury Shares: Company-owned shares, excluded as they are not part of public shares.
+        - Preferred Shares: Equity reserved for preferred shareholders, excluded as they do not belong to common shareholders.
+        - Shares Outstanding: Number of common shares available in the market.
+
+    Parameters:
+        - stock (yfinance.Ticker): The stock object fetched using yfinance.
+        - ticker (str): Stock ticker symbol.
+
+    Returns:
+        - float: The calculated BVPS, or None if data is missing.
+    """
+    o_bvps = None
+
+    try:
+        # Fetch quarterly balance sheet data
+        quarterly_balance_sheet = stock.quarterly_balance_sheet.T  # Transpose to make dates rows
+
+        # Get the most recent quarter's data
+        latest_quarter_balance_sheet = quarterly_balance_sheet.iloc[0]  # Fetch the first row (most recent quarter)
+
+        # Retrieve Stockholders' Equity data
+        stockholders_equity = latest_quarter_balance_sheet['Stockholders Equity']
+        # Retrieve Minority Interest data
+        minority_interest = latest_quarter_balance_sheet.get('Minority Interest', 0)
+        if pd.isna(minority_interest):  # Check if Minority Interest is NaN
+            minority_interest = 0
+        # Retrieve Shares Outstanding data
+        shares_outstanding = stock.info['sharesOutstanding']  # Assuming constant shares outstanding
+
+        # Equity adjusted for minority interest
+        equity_adjusted = stockholders_equity - minority_interest
+
+        # Calculate BVPS for each quarter
+        o_bvps = equity_adjusted / shares_outstanding
+
+        return o_bvps
+
+    except Exception as e:
+        logging.error(f"Error calculating quarterly BVPS for {ticker}: {e}")
+        return None
+
+
+
+def calc_roe_msci (stock, ticker):
+    """
+    Calculate Return on Equity (ROE) for a given stock ticker.
+    Data is fetched from Yahoo Finance using the yfinance library.
+
+
+    
+    ROE is calculated using the following formula:
+        ROE = EPS (TTM) / BVPS
+    Where:
+        - EPS (TTM): Trailing 12-month earnings per share.
+        - BVPS: Book Value Per Share, calculated as:
+    
+            BVPS = Total Stockholders' Equity / Shares Outstanding
+
+    
+    Parameters:
+        - ticker (str): Stock ticker symbol (e.g., 'AAPL').
+        
+    Returns:
+        - dict: Contains EPS (TTM), BVPS, and ROE as percentage.
+    """
+
+    # -------------------------- 1. Get Trailing EPS (TTM) --------------------------
+
+    trailing_EPS = calc_trailing_eps (stock, ticker)
+
+    if trailing_EPS is None:
+        logging.error("Cannot calculate ROE! EPS (TTM) data is not available (Ticker: {ticker}).")
+        return None
+    
+    #  -------------------------- 2. Get Book Value Per Share (BVPS) --------------------------
+    
+    bvps = calc_quarterly_bvps (stock, ticker)
+    
+    # Calculate ROE
+    try:
+        roe = trailing_EPS / bvps
+    except ZeroDivisionError:
+        logging.error("Cannot calculate ROE! Book Value Per Share (BVPS) is zero (Ticker: {ticker}).")
+        return None
+    
+    # Return calculated ROE result
+    return roe
+
+
+
+def calc_roa(stock, ticker, config, years=4):
+    """
+    Calculate ROA using Net Income and Total Assets from Yahoo Finance data.
+
+    ROA is calculated as:
+        ROA = Net Income / Total Assets
+
+    """
+
+    o_roa_calc_list = []
+
+    try:
+
+        # -------------- 1. Get Net Income  --------------
+
+        net_income_list = get_earnings (
+            stock,
+            ticker,
+            "net_income",
+            config['Earnings_Period'],
+            config['AlphaVantage']['API_Key'], 
+            config['AlphaVantage']['Base_URL'], 
+        )
+
+
+        # -------------- 2. Get Shareholder's Equity from Balance Sheet --------------
+
+        # Fetch Shareholders' Equity (or Stockholders' Equity) from the balance sheet (annual data)
+        balance_sheet = stock.balance_sheet.T  # Transpose to have dates as rows
+
+        # Get "Stockholders' Equity" from the balance sheet data
+        total_assets_list = balance_sheet['Total Assets'][:years]
+
+        # If Total Assets is not available, log a warning and set ROA as None
+        if total_assets_list is None:
+            logging.error(f"Cannot calculate ROA (Ticker: {ticker}): Data for Total Assets is missing")
+            return None
+
+        # -------------- 3. Calculate ROE --------------
+
+        # Calculate ROA for each year
+        for net_income, total_assets in zip (net_income_list, total_assets_list):
+
+            # ROA = Net Income / Total Assets
+            roa_calc = (net_income / total_assets)
+
+            o_roa_calc_list.append(roa_calc)
+
+        return o_roa_calc_list
+
+    except KeyError as e:
+        logging.error(f"KeyError: Missing expected data field in Yahoo Finance for Ticker {ticker}. Error: {e}")
+        return None
+    except Exception as e:
+        logging.error(f"Unexpected error during ROE calculation for Ticker {ticker}: {e}")
+        return None
+
+    roa_calc = None
+
+    try:
+
+        financials = stock.financials
+        balance_sheet = stock.balance_sheet
+
+        net_income = financials.loc['Net Income'].iloc[0]
+        total_assets = balance_sheet.loc['Total Assets'].iloc[0]
+        
+        # Calculating ROA
+        roa_calc = net_income / total_assets
+
+        logging.info(f"ROA - Calc (Ticker: {ticker}): {round(roa_calc * 100, 2)} %")
+
+        return roa_calc
+
+    except Exception as e:
+        logging.error(f"Error calculating ROA for {ticker}: {e}")
+        return None
+
+
+
+def calc_cfoa(stock, ticker, cashflow_period_req):
+    """
+    Fetch Cash Flow Over Assets (CFOA) for the past specified number of years using Yahoo Finance data.
+    Cash Flow Over Assets (CFOA) is calculated as:
+
+        CFOA = Cash Flow from Operating Activities / Total Assets
+
+    Parameters:
+        - ticker (str): Stock ticker symbol.
+        - years (int): Number of years for historical data.
+
+    Returns:
+        - list: CFOA values for each year.
+    """
+     
+    # Initialize the CFOA dictionary
+    cfoa_list = []
+
+    # Fetch the Cash Flow from Operating Activities (CFOA) data from Yahoo Finance
+    try:
+        # Fetch the Cash Flow from Operating Activities (CFOA) data
+        cash_flow_operating = stock.cashflow.loc['Operating Cash Flow']
+
+        # Check if the CFOA data is available
+        if cash_flow_operating is None:
+            logging.error(f"No Cash Flow from Operating Activities data found (Ticker: {ticker}). Cannot calculate CFOA!")
+            return None
+        
+        # Convert the CFOA data to a list
+        cash_flow_operating = cash_flow_operating.tolist()
+
+        # Fetch the Total Assets data from the balance sheet
+        total_assets = stock.balance_sheet.loc['Total Assets']
+
+        # Check if the Total Assets data is available
+        if total_assets is None:
+            logging.error(f"No Total Assets data found (Ticker: {ticker}). Cannot calculate CFOA!")
+            return None
+        
+        # Convert the Total Assets data to a list
+        total_assets = total_assets.tolist()
+
+        # Get the CFOA data for the requested number of years if available
+        for i in range(0, min (cashflow_period_req, len(cash_flow_operating), len(total_assets) ) ):
+
+            # Calculate the CFOA for each year
+            cfoa = cash_flow_operating[i] / total_assets[i]
+
+            # Append the CFOA value to the list
+            cfoa_list.append(cfoa)
+
+        return cfoa_list
+
+    except Exception as e:
+        logging.error(f"Error fetching CFOA data (Ticker: {ticker}): {e}")
+        return None
+
+
+
+def calc_gross_profit_metrics(config, stock, ticker, data_period_req):
+
+    """
+
+    Calculates Gross Profit Profitability Metrics:
+        1) Gross Profit over Assets (GPOA)
+        2) Gross Profit Margin (GPMAR)
+
+    1) Calculates Gross Profits over Assets (GPOA) using Gross Profits and Total Assets for specified number of years.
+
+        GPOA is calculated as: GPOA = Gross Profit / Total Assets
+
+            Gross Profit = Total Revenue - Cost of Goods Sold
+
+    2) Calculates Gross Profit Margin (GPMAR) using Gross Profit and Revenue for specified number of years.
+
+        GPMAR is calculated as: GPMAR = Gross Profit / Revenue
+
+    Parameters:
+        - config (dict): A dictionary containing the configuration settings.
+        - stock (yf.Ticker): A yfinance Ticker object representing the stock.
+        - ticker (str): The stock ticker symbol.
+        - data_period_req (int): The number of years for which to calculate GPOA & GPMAR.
+
+    Returns:
+        - tuple: A tuple containing the GPOA and GPMAR lists with the annual metrics for the specified number of years.
+
+    https://www.alphavantage.co/documentation/#income-statement
+    """
+
+
+    # -------------- 1. Fetch the data ----------------
+
+
+    # Initialize the GPOA list
+    gpoa_list = []
+    # Initialize the GPMAR list
+    gpmar_list = []
+
+    try:
+        # Fetch the Gross Profit data from the financials
+        income_statement = stock.financials.T   # Transpose to have dates as rows
+
+        # Check if the Income Statement data is available
+        if income_statement is None:
+            logging.error(f"No Income Statement data found (Ticker: {ticker}). Cannot calculate GPOA & GPMAR!")
+            return None, None
+        
+        # Initialize the Gross Profit list (for GPOA & GPMAR calculation)
+        gross_profits = []
+        # Initialize the Total Assets list (for GPOA calculation)
+        total_assets = []
+        # Initialize the Total Revenue list (for GPMAR calculation)
+        total_revenues = []
+
+        # Check if 'Gross Profit' data is available in the income statement
+        if 'Gross Profit' in income_statement.columns:
+
+            # Fetch the Gross Profit data from the Income Statement (Yahoo Finance)
+            gross_profits = income_statement['Gross Profit'].tolist()
+
+            # Fetch the Total Revenue data from the Income Statement (Yahoo Finance)
+            total_revenues = income_statement['Total Revenue'].tolist()
+
+            # Fetch the Total Assets data from the Balance Sheet (Yahoo Finance)
+            total_assets = stock.balance_sheet.loc['Total Assets'].tolist()
+
+        else:
+            logging.warning(f"Gross Profit data not found on Yahoo Finance (Ticker: {ticker}).")
+            logging.warning(f"Fetching Gross Profit data from 'Alpha Vantage'.")
+
+            # -------------- 1.1 Gross Profit --------------
+
+            # Fallback to Alpha Vantage to fetch Income Statement for Gross Profit data
+            annual_income_statements = get_income_statement_alpha_vantage (
+                config['AlphaVantage']['API_Key'], 
+                config['AlphaVantage']['Base_URL'], 
+                ticker,
+                "annual"
+            )
+
+            # Check if the Income Statement data is available
+            if annual_income_statements is None:
+                logging.error(f"No Gross Profit data found (Ticker: {ticker}). Cannot calculate GPOA & GPMAR!")
+                return None, None
+
+            # Fetch Gross Profit data from Income Statements (Alpha Vantage)
+            gross_profits = [float(income_statement.get("grossProfit", 0)) for income_statement in annual_income_statements]
+
+            # -------------- 1.2 Total Revenues --------------
+
+            # Fetch Total Revenue data from the Income Statements (Alpha Vantage)
+            total_revenues = [float(income_statement.get("totalRevenue", 0)) for income_statement in annual_income_statements]
+
+
+            # -------------- 1.3 Total Assets --------------
+
+            # Fallback to Alpha Vantage to fetch Balance Sheet data for Total Assets
+            annual_balance_sheets = get_balance_sheet_alpha_vantage (
+                config['AlphaVantage']['API_Key'], 
+                config['AlphaVantage']['Base_URL'], 
+                ticker,
+                "annual"
+            )
+
+            # Check if the Balance Sheet data is available
+            if annual_balance_sheets is None:
+                logging.error(f"No Total Assets data found (Ticker: {ticker}). Cannot calculate GPOA!")
+                logging.error(f"Only GPMAR calculcation can be done (Ticker: {ticker}).")
+                total_assets = None
+            
+            # Fetch Total Assets data from Balance Sheets (Alpha Vantage)
+            total_assets = [float(balance_sheet.get("totalAssets", 0)) for balance_sheet in annual_balance_sheets]
+
+
+
+        # -------------- 2.1 Calculate GPOA --------------
+        # GPOA = Gross Profit / Total Assets
+
+        # Check if 'Gross Profit' and 'Total Asset' data is available
+        if gross_profits and total_assets:
+
+            try:
+                # Calculate GPOA data for the requested number of years
+                for i in range (0, min ( len(total_assets), len(gross_profits), data_period_req ) ):
+
+                    # Calculate the GPOA for each year
+                    gpoa = gross_profits[i] / total_assets[i]
+
+                    # Append the GPOA value to the list
+                    gpoa_list.append(gpoa)
+
+
+            # Handle Division by Zero error
+            except ZeroDivisionError:
+                logging.error(f"Error calculating GPOA (Ticker: {ticker}): Division by zero detected.")
+                gpoa_list = None
+
+            except Exception as e:
+                logging.error(f"Error fetching GPOA data (Ticker: {ticker}): {e}")
+                gpoa_list = None
+
+        # Skip GPOA calculation if Total Assets data is missing
+        else:
+            gpoa_list = None
+
+        # -------------- END of 2.1 Calculate GPOA --------------
+
+
+        # -------------- 2.2 Calculate GPMAR --------------
+        # GPMAR = Gross Profit / Revenue
+
+        # Check if 'Gross Profit' and 'Total Revenue' data is available
+        if gross_profits and total_revenues:
+
+            try:
+
+                # Calculate GPMAR data for the requested number of years
+                for i in range (0, min ( len(total_revenues), len(gross_profits), data_period_req ) ):
+
+                    # Calculate the GPMAR for each year
+                    gpmar = gross_profits[i] / total_revenues[i]
+
+                    # Append the GPMAR value to the list
+                    gpmar_list.append(gpmar)
+
+            # Handle Division by Zero error
+            except ZeroDivisionError:
+                logging.error(f"Error calculating GPMAR (Ticker: {ticker}): Division by zero detected.")
+                gpoa_list = None
+
+            except Exception as e:
+                logging.error(f"Error fetching GPMAR data (Ticker: {ticker}): {e}")
+                gpoa_list = None
+
+        else:
+            gpmar_list = None
+
+        # -------------- 2.2 END of Calculate GPMAR --------------
+
+    except Exception as e:
+        logging.error(f"Error calculating GPOA & GPMAR (Ticker {ticker}): {e}")
+        return None, None
+
+
+    return gpoa_list, gpmar_list
+
+
+def calc_profitability_growth (ticker, earnings_eps, gpoa_list, roe_list, roa_list, cfoa_list, gpmar_list):
+
+    growthMetrics = GrowthMetrics()
+
+    # Calculate the Compound Annual Growth Rate (CAGR) for each profitability metric
+
+    # Calculate CAGR for EPS (Earnings Per Share)
+    eps_cagr = calc_cagr(ticker, earnings_eps)
+    growthMetrics.earnings_growth = eps_cagr
+
+    # Calculate CAGR for GPOA (Gross Profit over Assets)
+    gpoa_cagr = calc_cagr(ticker, gpoa_list)
+    growthMetrics.gpoa_growth = gpoa_cagr
+
+    # Calculate CAGR for ROE (Return on Equity)
+    roe_cagr = calc_cagr(ticker, roe_list)
+    growthMetrics.roe_growth = roe_cagr
+
+    # Calculate CAGR for ROA (Return on Assets)
+    roa_cagr = calc_cagr(ticker, roa_list)
+    growthMetrics.roa_growth = roa_cagr
+
+    # Calculate CAGR for CFOA (Cash Flow Over Assets)
+    cfoa_cagr = calc_cagr(ticker, cfoa_list)
+    growthMetrics.cfoa_growth = cfoa_cagr
+
+    # Calculate CAGR for GPMAR (Gross Profit Margin)
+    gpmar_cagr = calc_cagr(ticker, gpmar_list)
+    growthMetrics.gpmar_growth = gpmar_cagr
+
+    return growthMetrics
 
 
 
 # Function to generate excel file name
 def generate_file_name(config):
 
+    # Save the file to the 'gen' directory
+    # If the directory does not exist, create it
+    # The file name shall be using relative path,
+    # relative to the Script's directory
+
+    GEN_DIR_NAME = "gen"
+
+    # Check if the 'gen' directory exists (relative to the Script's directory)
+    if not os.path.exists(GEN_DIR_NAME):
+        os.makedirs(GEN_DIR_NAME)
+
+
+
+    # Get the base name of the file from the configuration
     FILE_BASE_NAME = config['Stock_Quality_Excel_Filename']
 
-    date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    # Get the current date
+    date_str = datetime.now().strftime("%Y-%m-%d")
 
-    file_name = f"{date_str}_{FILE_BASE_NAME}.xlsx"
+    # Generate the final file name using the gen directory, and the date
+    file_name_final = f"{GEN_DIR_NAME}\\{date_str}_{FILE_BASE_NAME}.xlsx"
 
     # Check if the file already exists, and increment the filename if it does
     file_counter = 1
-    while os.path.exists(file_name):
-        file_name = f"{date_str}_{FILE_BASE_NAME}_{file_counter}.xlsx"
+    while os.path.exists(file_name_final):
+        file_name_final = f"{GEN_DIR_NAME}\\{date_str}_{FILE_BASE_NAME}_{file_counter}.xlsx"
         file_counter += 1
 
-    return file_name
+    return file_name_final
 
 
 
@@ -844,80 +1963,56 @@ def save_to_excel(data, file_name):
 
 
 
-# ---------------------- Main Function ----------------------
+def analyze_stock(config, stock_data, stock, stock_info, ticker, weight):
 
-# Example usage in the script
-if __name__ == "__main__":
-
-    # Load the configuration file
-    config = load_config('config.json')
-    if not config:
-        logging.error("Config file could not be loaded. Exiting script.")
-        exit()
-
-    # Get the tickers and weights from the config file
-    tickers_and_weights = config.get("Tickers_and_Weights", None)
-
-    # Fetch data using yfinance and include original weights
-    stock_data = {}
-
-    # Loop through the tickers and weights
-    for ticker_data in tickers_and_weights:
-
-        # Get the ticker and weight
-        ticker = ticker_data["ticker"]
-        weight = ticker_data["weight"]
-
-        # Fetch the stock data from Yahoo Finance
-        stock = yf.Ticker(ticker)
-        stock_info = stock.info
+    try:
 
         logging.info(f"---------------------- {ticker} ----------------------")
 
-        # -------------- Earnings Growth Fetched Data --------------
+        # -------------- 1. Get Earnings (EPS) Data --------------
 
-        # Earnings Growth YoY from yahoo finance in percentage
-        earnings_growth_yoy_yfinance = fetch_earnings_growth_yfinance(stock_info, ticker)
+        # 1.1 Get EPS data
+        earnings_eps = get_earnings (
+            stock,
+            ticker,
+            "eps",
+            config['Earnings_Period'],
+            config['AlphaVantage']['API_Key'], 
+            config['AlphaVantage']['Base_URL'], 
+        )
 
-        # -------------- Calculate Earnings Growth YoY --------------
-    
-        # Calculate Earnings Growth YoY (Year over Year Growth) using Net Income
-        earnings_growth_yoy_quart_calc, earnings_growth_yoy_annual_calc = calc_earnings_growth_yoy(stock, ticker, config)
+        eps_latest_rnd = round(earnings_eps[0], 2) if earnings_eps is not None else None
+        if earnings_eps:
+            logging.info(f"Fetched Earnings data (EPS) for {len(earnings_eps)} years period (Ticker: {ticker}).")
+            logging.info(f"EPS (latest) (Ticker: {ticker}): {(eps_latest_rnd)}")
 
-        # -------------- Choose Source FOR Earnings Growth YoY --------------
+        # 1.2 Calculate EPS Growth Year-on-Year (YoY) for each year
+        earnings_growths_eps = calc_earnings_growth (
+            ticker,
+            earnings_eps
+        )
 
-        earnings_growth_yoy = None
+        # -------------- 2. Get Earnings (Net Income) Data --------------
 
-        # YoY Earnings Growth Source shall be determined by the Config file settings
-        # Default to "yfinance"
-        yoy_earnings_growth_source = config.get("YoY_Earnings_Growth_Source", "yfinance")
-            
-        # Choose the source based on the config for Methodology of Earnings Growth YoY Calculcation
-        #   - "internal_calculation" for calculated YoY growth
-        if "internal_calculation" == yoy_earnings_growth_source:
+        # 2.1 Get Net Income data
+        earnings_net_income = get_earnings (
+            stock,
+            ticker,
+            "net_income",
+            config['Earnings_Period'],
+            config['AlphaVantage']['API_Key'], 
+            config['AlphaVantage']['Base_URL'], 
+        )
 
-            logging.info(f"Income Statment Type: {config.get("Income_Statement_Type")}")
+        if earnings_net_income:
+            logging.info(f"Fetched Earnings data (Net Income) for {len(earnings_net_income)} years period (Ticker: {ticker}).")
 
-            # Check income statement type
-            #   - "quarterly" for quarterly income data
-            if "quarterly" == config.get("Income_Statement_Type"):
 
-                # Use the calculated quarterly earnings growth
-                earnings_growth_yoy = earnings_growth_yoy_quart_calc
-
-            #  - "annual" for annual income data
-            elif "annual" == config.get("Income_Statement_Type"):
-
-                # Use the calculated annual earnings growth
-                earnings_growth_yoy = earnings_growth_yoy_annual_calc
-
-        #   - "yfinance" for yahoo finance data
-        elif "yfinance" == yoy_earnings_growth_source:
-            earnings_growth_yoy = earnings_growth_yoy_yfinance
-        else:
-            logging.error("Invalid income statement type in config. Exiting script.")
-            exit()
-
+        # 2.2 Calculate Net Income Growth Year-on-Year (YoY) for each year
+        earnings_growths_net_income = calc_earnings_growth (
+            ticker,
+            earnings_net_income
+        )
 
         # -------------- Calculate Earnings Variability (EVAR) --------------
 
@@ -926,13 +2021,25 @@ if __name__ == "__main__":
         # The lower the EVAR, the better. A lower EVAR indicates that the company has more stable earnings growth.
 
         # Calculate EVAR using EPS
-        evar_eps = calc_evar (config, stock, ticker, config.get("Earnings_Variability_Period", 5), "eps")
+        evar_eps = calc_evar (ticker, earnings_growths_eps)
+        evar_eps_perc = round(evar_eps * 100, 2) if evar_eps is not None else "N/A"
+        logging.info(f"EVAR {len(earnings_eps)}Y (EPS) (Ticker: {ticker}): {(evar_eps_perc)}%")
+        
         # Calculate EVAR using Net Income
-        evar_net_income = calc_evar (config, stock, ticker, config.get("Earnings_Variability_Period", 5), "net_income")
+        evar_net_income = calc_evar (ticker, earnings_growths_net_income)
+        evar_net_income_perc = round(evar_net_income * 100, 2) if evar_net_income is not None else "N/A"
+        logging.info(f"EVAR {len(earnings_net_income)}Y (Net Income) (Ticker: {ticker}): {(evar_net_income_perc)}%")
 
-        # Convert EVAR to percentage
-        evar_eps_perc = evar_eps * 100 if evar_eps is not None else None
-        evar_net_income_perc = evar_net_income * 100 if evar_net_income is not None else None
+
+        # -------------- Compound Annual Growth Rate (CAGR) --------------
+
+        cagr_eps = calc_cagr(ticker, earnings_eps)
+        cagr_eps_perc = round(cagr_eps * 100, 2) if cagr_eps is not None else None
+        logging.info(f"CAGR {len(earnings_eps)}Y (EPS) (Ticker: {ticker}): {cagr_eps_perc} %")
+
+        cagr_net_income = calc_cagr(ticker, earnings_net_income)
+        cagr_net_income_perc = round(cagr_net_income * 100, 2) if cagr_net_income is not None else None
+        logging.info(f"CAGR {len(earnings_net_income)}Y (Net Income) (Ticker: {ticker}): {cagr_net_income_perc} %")
 
         # -------------- Dividend Yield Fetched Data --------------
 
@@ -945,15 +2052,124 @@ if __name__ == "__main__":
         else:
             logging.info(f"Dividend Yield (Ticker: {ticker}): N/A")
 
-        # -------------- Fetch ROE --------------
+        # -------------- Return on Equity (ROE) --------------
 
-        roe_yfinance = get_roe(stock_info, ticker)
-        roe_calc = calc_roe(stock, ticker, config)
+        if ticker == "RHI":
+            print("Debugging RHI")
 
+        # Fetch ROE using Yahoo Finance data
+        roe_yfinance = get_roe (stock_info, ticker)
         # Convert ROE to percentage
-        roe_calc_perc = roe_calc * 100 if roe_calc is not None else None
+        roe_yfinance_perc = roe_yfinance * 100 if roe_yfinance is not None else None
 
-        # ToDo Calculcate ROE using EPS
+        # Calculate ROE using Net Income and Shareholder's Equity 
+        roe_list = calc_roe (stock, ticker, config, config.get("Earnings_Period"))
+        # Convert ROE to percentage
+        roe_calc_perc = roe_list[0] * 100 if roe_list[0] is not None else None
+        logging.info(f"ROE - Calc (Ticker: {ticker}): {round(roe_calc_perc, 2)} %")
+
+        # Calculate ROE using MSCI methodology
+        if ticker in ["IDCC", "YOU", "VYX", "CVCO", "AGYS"]:
+            print("Debugging ROE MSCI")
+
+
+        roe_msci = calc_roe_msci(stock, ticker)
+        roe_msci_perc = roe_msci * 100 if roe_msci is not None else None
+        logging.info(f"ROE - MSCI (Ticker: {ticker}): {round(roe_msci_perc, 2)} %")
+
+
+
+
+        # TODO: calc_roe function - if the net income data from yahoo finance is missing
+        #       then avoid using Stackholders Equity data from yahoo finance to calcualte ROE
+        #       else the ROE might be calculated with the mismatching data.
+        #       For example, Net Income from 2023 and Stockholders Equity from 2022.
+        #       Such mismatching data can lead to incorrect ROE calculations.
+
+        # TODO: Calculate ROE and ROA over multiple time periods
+        #       Compare the logs before and after, and validate the calculations
+
+        # TODO: Verify that CAGR calculations are correct for all stocks using https://finchat.io/dashboard/
+
+        # TODO: Parallize the calculations of stock finacial metrics
+
+        # TODO Calculcate ROE using EPS
+
+        # TODO: Check the missing Net Income data for ROE calculcation for INVX
+        # TODO: Validate Standard Deviation Calucations for all stocks
+
+
+        # -------------- Return on Assets (ROA) --------------
+        
+        # Fetch ROA using Yahoo Finance data
+        roa_yfinance = get_roa(stock_info, ticker)
+        # Convert ROA to percentage
+        roa_yfinance_perc = roa_yfinance * 100 if roa_yfinance is not None else None
+
+        # Calculate ROA using Net Income and Total Assets
+        roa_list = calc_roa(stock, ticker, config)
+        # Convert ROA to percentage
+        roa_calc_perc = roa_list[0] * 100 if roa_list[0] is not None else None
+        logging.info(f"ROA - Calc (Ticker: {ticker}): {round(roa_calc_perc, 2)} %")
+
+
+        # -------------- Cash Flow Over Assets (CFOA) --------------
+        
+        cfoa_list = calc_cfoa(stock, ticker, config.get("Earnings_Period"))
+        cfoa_latest_perc = round(cfoa_list[0] * 100, 2) if cfoa_list is not None else None
+        logging.info(f"CFOA (Ticker: {ticker}): {cfoa_latest_perc} %")
+
+
+        # -------------- Gross Profits Over Assets (GPOA) --------------
+        # -------------- Gross Profit Margin (GPMAR) --------------
+
+        # TODO: Check the the GPOA is not N/A for the following stocks:
+        #       ECG, AX, RDN
+
+        gpoa_list, gpmar_list = calc_gross_profit_metrics(config, stock, ticker, config.get("Earnings_Period"))
+
+        gpoa_latest_perc = round(gpoa_list[0] * 100, 2) if gpoa_list is not None else None
+        logging.info(f"GPOA (Ticker: {ticker}): {gpoa_latest_perc} %")
+
+        gpmar_latest_perc = round(gpmar_list[0] * 100, 2) if gpmar_list is not None else None
+        logging.info(f"GPMAR (Ticker: {ticker}): {gpmar_latest_perc} %")
+
+
+        # -------------- Profit Margin --------------
+        # Safe multiplication to handle None values, Convert to percentage
+        profit_margin = stock_info.get("profitMargins", None)
+        profit_margin_percent = profit_margin * 100 if profit_margin is not None else None
+        logging.info(f"Profit Margin (Ticker: {ticker}): {round(profit_margin_percent, 2)} %")
+
+        # -------------- P/E Ratio --------------
+
+        # fetch Forward P/E ratio
+        forwardPE = stock_info.get("forwardPE", None)
+        forwardPE_rnd = round(forwardPE, 2) if forwardPE is not None else None
+        logging.info(f"P/E (Forward) (Ticker: {ticker}): {forwardPE_rnd}")
+
+        # fetch Trailing P/E ratio
+        trailingPE = stock_info.get("trailingPE", None)
+        trailingPE_rnd = round(trailingPE, 2) if trailingPE is not None else None
+        logging.info(f"P/E (Trailing) (Ticker: {ticker}): {trailingPE_rnd}")
+
+
+        # -------------- P/B Ratio --------------
+
+        # fetch P/B ratio
+        pb_ratio = stock_info.get("priceToBook", None)
+        pb_ratio_rnd = round(pb_ratio, 2) if pb_ratio is not None else None
+        logging.info(f"P/B (Ticker: {ticker}): {pb_ratio_rnd}")
+
+        # -------------- P/CF --------------
+        # Calculate P/CF
+        # p_cf = calculate_pcf(stock)
+        #logging.info(f"P/CF (Ticker: {ticker}): {p_cf}")
+
+        # -------------- Market Cap --------------
+        # Convert Market Cap to billions
+        market_cap = stock_info.get("marketCap", None)
+        market_cap_billions = market_cap / 1e9 if market_cap is not None else None  # Convert Market Cap to billions
 
 
         # -------------- Sector and Industry --------------
@@ -965,54 +2181,141 @@ if __name__ == "__main__":
         logging.info(f"Sector: {sector}")
         logging.info(f"Industry: {industry}")
 
-        # ToDo: Calculate Pie Chart of Sectors diversification
+        # TODO: Calculate Pie Chart of Sectors diversification
         #       for the calculcated weightings using your own qualit methodology
         #       We want to be diviersified across sectors.
         #       Diversification is the only free lunch in investing.
 
 
 
-        # -------------- Profit Margin --------------
-        # Safe multiplication to handle None values, Convert to percentage
-        profit_margin = stock_info.get("profitMargins", None)
-        profit_margin_percent = profit_margin * 100 if profit_margin is not None else None
 
-        # -------------- P/E Ratio --------------
-        # fetch training P/E ratio
-        trailingPE = stock_info.get("trailingPE", None)
+        # -------------- Calculate Profitability Growth --------------
+        # earnings_growths_eps      
+        # gpoa_growth               
+        # roe_growth                
+        # roa_growth                
+        # cfoa_growth
+        # gpmar_growth
+        profitability_growth = calc_profitability_growth (
+            ticker,
+            earnings_eps,                 # Five-year growth in Earnings per Share (EPS) - EPS Growth
+            gpoa_list,                    # Five-year growth in Gross Profits over Assets - GPOA Growth
+            roe_list,                     # Five-year growth in Return on Equity - ROE Growth
+            roa_list,                     # Five-year growth in Return on Assets - ROA Growth
+            cfoa_list,                    # Five-year growth in Cash Flow over Assets - CFOA Growth
+            gpmar_list                    # Five-year growth in Gross Profit Margin - GPMAR Growth
+        )
 
-        # -------------- P/CF --------------
-        # Calculate P/CF
-        p_cf = calculate_pcf(stock)
-
-        # -------------- Market Cap --------------
-        # Convert Market Cap to billions
-        market_cap = stock_info.get("marketCap", None)
-        market_cap_billions = market_cap / 1e9 if market_cap is not None else None  # Convert Market Cap to billions
 
         # Store Stock Metrics
         stock_data[ticker] = {
             "Company": stock_info.get("longName", "N/A"),
             "Original Weight": weight,  # Add the original weight for the company
+            "P/E (Forward)": "{:,.2f}".format(forwardPE) if forwardPE is not None else "N/A",
             "P/E (Trailing)":  "{:,.2f}".format(trailingPE) if trailingPE is not None else "N/A",
-            "Earnings Growth YoY - Quarterly Calc (%)": "{:,.2f}".format(earnings_growth_yoy_quart_calc) if earnings_growth_yoy_quart_calc is not None else "N/A",
-            "Earnings Growth YoY - Annual Calc (%)": "{:,.2f}".format(earnings_growth_yoy_annual_calc) if earnings_growth_yoy_annual_calc is not None else "N/A",
-            "Earnings Growth YoY - yFinance Fetched (%)": earnings_growth_yoy_yfinance,
-            "EVAR - EPS (%)": "{:,.2f}".format(evar_eps_perc) if evar_eps_perc is not None else "N/A",
-            "EVAR - Net Income (%)": "{:,.2f}".format(evar_net_income_perc) if evar_net_income_perc is not None else "N/A",   
+            "EPS (latest)": "{:,.2f}".format(eps_latest_rnd) if eps_latest_rnd is not None else "N/A",
+            "P/B": "{:,.2f}".format(pb_ratio_rnd) if pb_ratio_rnd is not None else "N/A",
+            "EVAR - EPS (%)": "{}".format(evar_eps_perc),
+            "EVAR - Net Income (%)": "{}".format(evar_net_income_perc),   
+            "CAGR - EPS (%)": "{:,.2f}".format(cagr_eps_perc) if cagr_eps_perc is not None else "N/A",
+            "CAGR - Net Income (%)": "{:,.2f}".format(cagr_net_income_perc) if cagr_net_income_perc is not None else "N/A",
             "Dividend Yield (%)": "{:,.2f}".format(dividend_yield_percent) if dividend_yield_percent is not None else "N/A",     
-            "ROE - yFinance (%)": "{:,.2f}".format(roe_yfinance) if roe_yfinance is not None else "N/A",
+            "ROE - yFinance (%)": "{:,.2f}".format(roe_yfinance_perc) if roe_yfinance_perc is not None else "N/A",
             "ROE - Calc (%)": "{:,.2f}".format(roe_calc_perc) if roe_calc_perc is not None else "N/A",
+            "ROA - yFinance (%)": "{:,.2f}".format(roa_yfinance_perc) if roa_yfinance_perc is not None else "N/A",
+            "ROA - Calc (%)": "{:,.2f}".format(roa_calc_perc) if roa_calc_perc is not None else "N/A",
+            "CFOA (%)": "{:,.2f}".format(cfoa_latest_perc) if cfoa_latest_perc is not None else "N/A",
+            "GPOA (%)": "{:,.2f}".format(gpoa_latest_perc) if gpoa_latest_perc is not None else "N/A",
+            "GPMAR (%)": "{:,.2f}".format(gpmar_list) if gpmar_list is not None else "N/A",
+            "Profit Margin (%)": "{:,.2f}".format(profit_margin_percent) if profit_margin_percent is not None else "N/A",
             "Sector": sector,
             "Industry": industry, 
-            "Profit Margin (%)": profit_margin_percent,
-            "P/CF": p_cf,
-            "P/B": stock_info.get("priceToBook", None),
             "Market Cap (in Billions)": market_cap_billions
         }
 
+    except Exception as e:
+        logging.error(f"Error analyzing stock (Ticker: {ticker}): {e}")
+        # Print the full stack trace for debugging
+        logging.error(traceback.print_exc())
 
-    # Generate the file name with today's date
-    file_name = generate_file_name(config)
 
-    save_to_excel(stock_data, file_name)
+
+
+# ---------------------- Main Function ----------------------
+
+# Example usage in the script
+if __name__ == "__main__":
+
+    try:
+
+        # -------------------------------- 1. Initialize the Script -------------------------------- #
+
+        # Store Script Start Date
+        programStartDate = time.strftime ('%Y-%m-%d %H:%M:%S', time.localtime())
+
+        # Store Scripts Start Time
+        programStartTime = datetime.now ( )
+    
+        log_file_path = config_logging()
+
+        # Instantiate Program Information Object
+        __program__ = __ProgramInfo__ ( )
+
+        # Print the Script Date (Format YYYY-MM-DD) and Version
+        logging.info(f"Running Stock Quality Analysis Script:\n    Version: {__program__.swVersion}\n    Date: {__program__.buildDate.strftime('%d.%m.%Y')}")
+
+        # Print the disclaimer message
+        print_disclaimer()
+
+        # Load the configuration file
+        config = load_config('config.json')
+        if not config:
+            logging.error("Config file could not be loaded. Exiting script.")
+            exit()
+
+        # Get the tickers and weights from the config file
+        tickers_and_weights = config.get("Tickers_and_Weights", None)
+
+        # Fetch data using yfinance and include original weights
+        stock_data = {}
+
+        # Enable Debug Mode for yfinance    
+        # yf.enable_debug_mode()
+
+        # Loop through the tickers and weights
+        for ticker_data in tickers_and_weights:
+
+            # Get the ticker and weight
+            ticker = ticker_data["ticker"]
+            weight = ticker_data["weight"]
+
+            # Fetch the stock data from Yahoo Finance
+            stock = yf.Ticker(ticker)
+            stock_info = stock.info
+
+            # Valid Stock Ticker Symbol
+            if stock_info and 'symbol' in stock_info:
+
+                # Analyze the current stock
+                analyze_stock (config, stock_data, stock, stock_info, ticker, weight)
+
+            # Invalid Stock Ticker Symbol
+            else:
+                logging.error(f"Invalid Stock Ticker Symbol: {ticker}")
+                logging.error(f"Skipping Stock Analysis for {ticker}.")
+                continue
+
+        # Generate the file name with today's date
+        file_name = generate_file_name(config)
+
+        save_to_excel(stock_data, file_name)
+
+        # Output program's runtime
+        programRuntime = datetime.now() - programStartTime
+        logging.info (f"Program total runtime: {programRuntime}")
+
+    except Exception as e:
+        logging.error(f"Error running Stock Quality Analysis Script: {e}")
+        # Print the full stack trace for debugging
+        logging.error(traceback.print_exc())
+        raise e

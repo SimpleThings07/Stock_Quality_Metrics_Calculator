@@ -2,23 +2,24 @@
   
     "Stock_Quality_Excel_Filename": "S&P_600_Quality_Financial_Metrics",
   
-    "__comment_YoY_Earnings_Growth_Source__": "options: 'internal_calculation' or 'yfinance'",
-    "YoY_Earnings_Growth_Source": "internal_calculation", 
+    "__comment_Earnings_Growth_YoY_Source__": "options: 'internal_calculation' or 'yfinance'",
+    "Earnings_Growth_YoY_Source": "internal_calculation", 
 
     "__comment_Income_Statement_Type__": "Type of income statement to use: 'quarterly' or 'annual'.",
     "Income_Statement_Type": "quarterly",
 
-    "__comment_Earnings_Variability_Period__": "Number of years to calculate earnings variability. Use 5 for MSCI methodology",
-    "Earnings_Variability_Period": 5,
+    "__comment_Earnings_Variability_Period__": "Number of earning periods (in years) to calculate earnings variability. Use 5 for MSCI methodology",
+    "Earnings_Period": 4,
 
     "AlphaVantage":
     {
-      "__comment_API_Key__": "API Key for Alpha Vantage: I8PM6CVPQW6UTUES, X0NWZC9N4HRI81XZ",
-      "API_Key": "I8PM6CVPQW6UTUES",
+      "__comment_API_Key__": "API Keys for Alpha Vantage: I8PM6CVPQW6UTUES, X0NWZC9N4HRI81XZ, KSXIATXJ1OZKX7X9",
+      "API_Key": "KSXIATXJ1OZKX7X9",
       "Base_URL": "https://www.alphavantage.co/query"
     },
 
     "__comment_Tickers_and_Weights__": "List of tickers with corresponding weights from the Index or ETF.",
+    "__TODO__": "Make a Portfolio using Small Cap ex. USA to for tax optimization.",
     "Tickers_and_Weights": [
       {"ticker": "AWI", "weight": 2.33},
       {"ticker": "RHI", "weight": 2.26},
