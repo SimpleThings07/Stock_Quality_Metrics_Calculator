@@ -53,16 +53,16 @@ class __ProgramInfo__:
 
     # MINOR: Incremented when new functionality is added in a backward compatible manner. It's safe to update to a new minor version
     #        without requiring code changes. Code changes are needed only to make use of the new features.
-    minorVersion : str = "0"
+    minorVersion : str = "1"
     
     # PATCH: Incremented when backward compatible bug fixes are made. No new features are added. Some call this micro.
-    patchVersion : str = "10"
+    patchVersion : str = "0"
     
     # Build Date of the Application - Date Format: YYMMDD
     buildDate : str = datetime (
         year=2025,
-        month=1,
-        day=28
+        month=2,
+        day=2
     )
 
     # Complete Software Version - Major.Minor.Patch.BuildDate (yymmdd) -> e.g '1.0.0'
@@ -73,12 +73,15 @@ class __ProgramInfo__:
 # ---------------------- Setup logging ----------------------
 
 SCRIPT_NAME = os.path.basename(__file__).replace('.py', '')
+
+SCRIPT_CONFIG_FILE = "Script_Config.json"
+
 LOG_FILE = f"{SCRIPT_NAME}.log"
-LOG_CONFIG_FILE = "LoggingConfig.json"
+LOG_CONFIG_FILE = "Logging_Config.json"
 
 
 def config_logging ( ):
-    """ Configure the logger with the Command-line arguments
+    """ Configure the logger
 
             Parameters:
                 None
@@ -91,7 +94,7 @@ def config_logging ( ):
 
 
     # Load Logging configuration
-    with open(LOG_CONFIG_FILE, "r") as logging_config_file:
+    with open(LOG_CONFIG_FILE, "r", encoding='utf-8') as logging_config_file:
 
         logging_config = json.load(logging_config_file)
 
@@ -298,7 +301,7 @@ def print_disclaimer():
 
 
 # Read the configuration file
-def load_config(config_file='Config.json'):
+def load_config(config_file='Script_Config.json'):
     try:
         with open(config_file, 'r') as f:
             config = json.load(f)
@@ -1179,7 +1182,7 @@ def calc_cagr(ticker, earnings):
         logging.error(f"Not enough Earning Growth data points to calculate CAGR (Ticker: {ticker}). At least {MIN_EARNINGS_GROWTH_DATA_POINTS} data points are required.")
         return None
     
-    logging.info(f"Calculating Compound Annual Growth Rate (CAGR) (Ticker: {ticker}).")
+    logging.debug(f"Calculating Compound Annual Growth Rate (CAGR) (Ticker: {ticker}).")
 
     try:
 
@@ -1215,6 +1218,12 @@ def calc_cagr(ticker, earnings):
 
             cagr = -1 * ((abs(end_earnings_growth) / abs(start_earnings_growth)) ** (1 / n) - 1)
             return cagr
+        
+        # If earnings are transitioning from positive to negative
+        if start_earnings_growth > 0 and end_earnings_growth < 0:
+
+            # Then it means the CAGR ratio is negative and we cannot calculate the CAGR for this case
+            return -1
 
 
         # If earnings are transitioning from negative to positive or both positive
@@ -1589,27 +1598,6 @@ def calc_roa(stock, ticker, config, years=4):
         logging.error(f"Unexpected error during ROE calculation for Ticker {ticker}: {e}")
         return None
 
-    roa_calc = None
-
-    try:
-
-        financials = stock.financials
-        balance_sheet = stock.balance_sheet
-
-        net_income = financials.loc['Net Income'].iloc[0]
-        total_assets = balance_sheet.loc['Total Assets'].iloc[0]
-        
-        # Calculating ROA
-        roa_calc = net_income / total_assets
-
-        logging.info(f"ROA - Calc (Ticker: {ticker}): {round(roa_calc * 100, 2)} %")
-
-        return roa_calc
-
-    except Exception as e:
-        logging.error(f"Error calculating ROA for {ticker}: {e}")
-        return None
-
 
 
 def calc_cfoa(stock, ticker, cashflow_period_req):
@@ -1929,7 +1917,7 @@ def generate_file_name(config):
 
 
 # Function to save data to excel file
-def save_to_excel(data, file_name):
+def save_to_excel (data, file_name):
 
     # Convert the data to a pandas DataFrame
     df = pd.DataFrame.from_dict(data, orient='index')
@@ -1963,7 +1951,7 @@ def save_to_excel(data, file_name):
 
 
 
-def analyze_stock(config, stock_data, stock, stock_info, ticker, weight):
+def analyze_stock (config, stock_data, stock, stock_info, ticker, weight):
 
     try:
 
@@ -2190,12 +2178,6 @@ def analyze_stock(config, stock_data, stock, stock_info, ticker, weight):
 
 
         # -------------- Calculate Profitability Growth --------------
-        # earnings_growths_eps      
-        # gpoa_growth               
-        # roe_growth                
-        # roa_growth                
-        # cfoa_growth
-        # gpmar_growth
         profitability_growth = calc_profitability_growth (
             ticker,
             earnings_eps,                 # Five-year growth in Earnings per Share (EPS) - EPS Growth
@@ -2226,7 +2208,7 @@ def analyze_stock(config, stock_data, stock, stock_info, ticker, weight):
             "ROA - Calc (%)": "{:,.2f}".format(roa_calc_perc) if roa_calc_perc is not None else "N/A",
             "CFOA (%)": "{:,.2f}".format(cfoa_latest_perc) if cfoa_latest_perc is not None else "N/A",
             "GPOA (%)": "{:,.2f}".format(gpoa_latest_perc) if gpoa_latest_perc is not None else "N/A",
-            "GPMAR (%)": "{:,.2f}".format(gpmar_list) if gpmar_list is not None else "N/A",
+            "GPMAR (%)": "{:,.2f}".format(gpmar_latest_perc) if gpmar_latest_perc is not None else "N/A",
             "Profit Margin (%)": "{:,.2f}".format(profit_margin_percent) if profit_margin_percent is not None else "N/A",
             "Sector": sector,
             "Industry": industry, 
@@ -2268,7 +2250,7 @@ if __name__ == "__main__":
         print_disclaimer()
 
         # Load the configuration file
-        config = load_config('config.json')
+        config = load_config(SCRIPT_CONFIG_FILE)
         if not config:
             logging.error("Config file could not be loaded. Exiting script.")
             exit()
@@ -2280,7 +2262,11 @@ if __name__ == "__main__":
         stock_data = {}
 
         # Enable Debug Mode for yfinance    
-        # yf.enable_debug_mode()
+        #yf.enable_debug_mode()
+
+        # Get the yfinance logger
+        yf_logger = logging.getLogger("yfinance")
+        yf_logger.setLevel(logging.CRITICAL)
 
         # Loop through the tickers and weights
         for ticker_data in tickers_and_weights:
